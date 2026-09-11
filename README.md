@@ -152,6 +152,8 @@ cached for 30 seconds to avoid calling the official API too frequently.
 - `GET /api/sources` — active source, CC Switch profile, and capability matrix
 - `GET /api/metrics?source=deepseek|router|harness&days=7&limit=400` — unified metrics
 - `GET /api/command-code` — Command Code account, usage, credits and limits
+- `GET /api/health` — application identity marker, used by the tray to tell our
+dashboard apart from anything else that happens to hold the port
 
 `source=harness` is the same snapshot shape as the other two sources, built from
 the session logs; its records carry no status code (the log has none) and a
@@ -384,6 +386,44 @@ assemblies and their native loader, pinned to **1.0.4191.47** — the SDK matchi
 the WebView2 Runtime that Edge ships here (152.0.4191.66). `fetch-webview2.ps1`
 downloads that exact package from NuGet rather than borrowing a copy from another
 product's install directory, whose version would not be under our control.
+
+### The local server
+
+The tray starts `scripts/start-dashboard.ps1` on demand and never waits on it: the
+script ends in `$server.WaitForExit()`, so a `WaitForExit()` here would block the UI
+thread forever with no error.
+
+**Identity, not occupancy.** A listening socket and a 2xx-5xx status code both prove
+only that *something* is on the port. `GET /api/health` answers
+`{"app":"router-monitor-dashboard","v":1,"ok":true}` and both sides check that
+marker (`ServerHost.IsServing`, `Test-DashboardHealth` in the start script). Before
+this, any unrelated program on port 3000 was taken for the dashboard: the tray
+navigated to it, and the start script exited 0 without ever starting anything.
+Now the tray reports 本地服务：端口被占用, logs which program is in the way, gives up
+after about twenty seconds instead of four minutes, and the start script refuses to
+fight over a port it does not own.
+
+**Retrying is real.** The old launcher latched a one-shot flag that only cleared if
+`Process.Start` threw, so a script that ran and *failed* left the tray waiting and
+never trying again. A launch is now gated on the script process itself: while it is
+alive a build or the server is in progress and a second launch would only duplicate
+the build, and once it has exited without the dashboard answering, opening the panel
+again starts it again.
+
+**A stopped server is recoverable.** The tray menu shows what the server is doing
+(运行中 / 未运行 / 端口被占用) and carries **重启本地服务**, which stops our server
+and starts it again. Opening the panel re-checks the server whenever the page is not
+content-ready, so killing the server out from under a running tray no longer leaves
+the flyout dead until the tray is restarted. A transition to stopped raises a
+balloon once - a tray that has quietly stopped working must not look like one that is
+fine.
+
+| Command | What it does |
+| --- | --- |
+| `powershell -File scripts\start-dashboard.ps1` | start if our dashboard is not already serving |
+| `powershell -File scripts\start-dashboard.ps1 -Restart` | stop ours and start it again |
+
+`curl http://127.0.0.1:3000/api/health` reproduces the identity check by hand.
 
 ### Verification
 

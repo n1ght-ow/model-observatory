@@ -105,6 +105,7 @@ namespace RouterMonitorTray
         private string bridgeLastMessage = "(none)";
         private string lastDashboardUri;
         private bool cancelledNavigation;
+        private bool recovering;
 
         private Point anchor;
         private string startPage = "/";
@@ -159,6 +160,13 @@ namespace RouterMonitorTray
         /// settings file can follow a decision that was made inside the page.
         /// </summary>
         public event Action<bool> PinnedChanged;
+
+        /// <summary>
+        /// Raised when the page cannot be brought up, with something the user can act
+        /// on. The label inside the panel is not enough: a tray icon that has quietly
+        /// stopped working looks identical to one that is fine.
+        /// </summary>
+        public event Action<string> ProblemReported;
 
         public bool WebViewFailed
         {
@@ -685,6 +693,57 @@ namespace RouterMonitorTray
             {
                 StartInit();
             }
+            else if (webViewReady && !IsContentReady)
+            {
+                // The page is up but empty or failed. The usual cause is the local
+                // server having gone away while the tray stayed running, and without
+                // this the flyout would stay dead until the tray was restarted.
+                RecoverServer();
+            }
+        }
+
+        /// <summary>
+        /// Re-checks the local server and reloads the page if it is back. Runs off the
+        /// UI thread except for the WebView calls, and refuses to run twice at once:
+        /// ShowPanel is called on every open.
+        /// </summary>
+        private async void RecoverServer()
+        {
+            if (recovering)
+            {
+                return;
+            }
+            recovering = true;
+            try
+            {
+                loading.Visible = true;
+                SetStatus("正在重新连接本地服务…");
+                bool serving = await ServerHost.EnsureAsync(240000, SetStatus).ConfigureAwait(true);
+                if (serving)
+                {
+                    loading.Visible = false;
+                    Reload();
+                }
+                else
+                {
+                    string detail = ServerHost.LastProblem;
+                    SetStatus("本地服务不可用" + (string.IsNullOrEmpty(detail) ? "" : "：" + detail));
+                    if (ProblemReported != null)
+                    {
+                        ProblemReported(string.IsNullOrEmpty(detail)
+                            ? @"本地服务不可用，详情见 logs\dashboard.log"
+                            : detail);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogInit("recover: " + ex.Message);
+            }
+            finally
+            {
+                recovering = false;
+            }
         }
 
         public void HidePanel()
@@ -846,7 +905,14 @@ namespace RouterMonitorTray
                 // again retries instead of staying dead until a restart.
                 initStarted = false;
                 webViewFailed = true;
-                SetStatus(@"本地服务启动失败，请检查 logs\dashboard.log");
+                string detail = ServerHost.LastProblem;
+                SetStatus("本地服务启动失败" + (string.IsNullOrEmpty(detail) ? "" : "：" + detail));
+                if (ProblemReported != null)
+                {
+                    ProblemReported(string.IsNullOrEmpty(detail)
+                        ? @"本地服务启动失败，详情见 logs\dashboard.log"
+                        : detail);
+                }
                 return;
             }
 

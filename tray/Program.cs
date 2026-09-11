@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;
 
 namespace RouterMonitorTray
 {
@@ -29,6 +30,9 @@ namespace RouterMonitorTray
         private ToolStripMenuItem itemPin;
         private ToolStripMenuItem itemTopMost;
         private ToolStripMenuItem itemSize;
+        private ToolStripMenuItem itemServer;
+        private readonly Timer serverTimer;
+        private bool? lastServerServing;
         private readonly Icon trayIcon;
         private bool disposed;
         private bool autoStart;
@@ -52,6 +56,16 @@ namespace RouterMonitorTray
             menu = BuildMenu();
             // The page can pin itself; the menu and the settings file have to agree.
             panel.PinnedChanged += OnPinnedChanged;
+            panel.ProblemReported += delegate(string detail)
+            {
+                Notify("Router Monitor 无法打开面板", detail, ToolTipIcon.Warning);
+            };
+
+            // Keeps the menu's server line honest while the menu is closed.
+            serverTimer = new Timer();
+            serverTimer.Interval = 60000;
+            serverTimer.Tick += delegate { RefreshServerStatus(); };
+            serverTimer.Start();
 
             notifyIcon = new NotifyIcon();
             notifyIcon.Icon = trayIcon;
@@ -154,6 +168,22 @@ namespace RouterMonitorTray
             reset.Click += delegate { panel.ForgetPosition(); };
             strip.Items.Add(reset);
 
+            strip.Items.Add(new ToolStripSeparator());
+
+            // What the local server is doing, and the one way to fix it from here.
+            ToolStripMenuItem server = new ToolStripMenuItem("本地服务：检查中…");
+            server.Enabled = false;
+            strip.Items.Add(server);
+            itemServer = server;
+
+            ToolStripMenuItem restart = new ToolStripMenuItem("重启本地服务");
+            restart.Click += delegate { RestartServer(); };
+            strip.Items.Add(restart);
+
+            // Opening the menu is what refreshes the status; a background poll would
+            // cost a request every few seconds for a line nobody is reading.
+            strip.Opening += delegate { RefreshServerStatus(); };
+
             ToolStripMenuItem auto = new ToolStripMenuItem("开机自动启动");
             auto.CheckOnClick = true;
             auto.Click += delegate { ToggleAutoStart(auto.Checked); };
@@ -174,6 +204,116 @@ namespace RouterMonitorTray
             if (e.Button == MouseButtons.Left)
             {
                 panel.TogglePanel();
+            }
+        }
+
+        /// <summary>Updates the menu's server line. Runs off the UI thread on purpose.</summary>
+        private void RefreshServerStatus()
+        {
+            if (itemServer == null)
+            {
+                return;
+            }
+            Task<string> probe = Task.Factory.StartNew(delegate
+            {
+                if (ServerHost.IsServing(1500))
+                {
+                    return "本地服务：运行中";
+                }
+                if (ServerHost.PortIsTaken())
+                {
+                    return "本地服务：端口被占用";
+                }
+                return "本地服务：未运行";
+            });
+            probe.ContinueWith(delegate(Task<string> task)
+            {
+                string text = task.IsFaulted ? "本地服务：未知" : task.Result;
+                try
+                {
+                    if (itemServer != null && !itemServer.IsDisposed)
+                    {
+                        itemServer.Text = text;
+                    }
+                }
+                catch
+                {
+                }
+                // Only on the transition: a balloon every minute would be worse than
+                // no balloon at all.
+                bool serving = text == "本地服务：运行中";
+                if (lastServerServing == true && !serving)
+                {
+                    Notify("Router Monitor 本地服务已停止", text, ToolTipIcon.Warning);
+                }
+                lastServerServing = serving;
+            });
+        }
+
+        /// <summary>Stops our server and starts it again, then reloads the panel.</summary>
+        private void RestartServer()
+        {
+            if (itemServer != null)
+            {
+                itemServer.Text = "本地服务：正在重启…";
+            }
+            ServerHost.RestartDetached();
+            Task.Factory.StartNew(delegate
+            {
+                DateTime deadline = DateTime.UtcNow.AddSeconds(180);
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (ServerHost.IsServing(1500))
+                    {
+                        return true;
+                    }
+                    System.Threading.Thread.Sleep(500);
+                }
+                return false;
+            }).ContinueWith(delegate(Task<bool> task)
+            {
+                bool ok = !task.IsFaulted && task.Result;
+                try
+                {
+                    if (ok)
+                    {
+                        panel.Reload();
+                    }
+                    else
+                    {
+                        Notify("本地服务重启失败",
+                            ServerHost.LastProblem ?? @"详情见 logs\dashboard.log",
+                            ToolTipIcon.Warning);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    PanelForm.LogInit("restart: " + ex.Message);
+                }
+            });
+        }
+
+        /// <summary>
+        /// A balloon, shown only when nobody is looking at the panel. A tray that has
+        /// stopped working must not look the same as one that is fine.
+        /// </summary>
+        internal void Notify(string title, string text, ToolTipIcon icon)
+        {
+            try
+            {
+                if (notifyIcon == null || panel == null || panel.Visible)
+                {
+                    return;
+                }
+                notifyIcon.BalloonTipTitle = title;
+                notifyIcon.BalloonTipText = text;
+                notifyIcon.BalloonTipIcon = icon;
+                notifyIcon.ShowBalloonTip(8000);
+                PanelForm.LogInit("notify: " + title + " - " + text);
+            }
+            catch (Exception ex)
+            {
+                PanelForm.LogInit("notify failed: " + ex.Message);
             }
         }
 
@@ -769,6 +909,10 @@ namespace RouterMonitorTray
                 if (menu != null)
                 {
                     menu.Dispose();
+                }
+                if (serverTimer != null)
+                {
+                    serverTimer.Dispose();
                 }
                 if (trayIcon != null)
                 {

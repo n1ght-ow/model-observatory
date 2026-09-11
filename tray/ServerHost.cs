@@ -37,7 +37,6 @@ namespace RouterMonitorTray
         public static readonly string ProjectRoot = @"D:\dashboard";
 
         private static readonly object Gate = new object();
-        private static bool launchRequested;
 
         /// <summary>True once something is accepting TCP on the port (not necessarily serving yet).</summary>
         public static bool IsListening(int timeoutMs)
@@ -63,14 +62,52 @@ namespace RouterMonitorTray
         }
 
         /// <summary>
-        /// True once the Next.js app answers a real request. A listening socket is
-        /// not enough: the server binds before the first route is compiled.
+        /// The application name /api/health reports. Keep in step with APP_ID in
+        /// src/app/api/health/route.ts.
+        /// </summary>
+        public const string AppId = "router-monitor-dashboard";
+
+        /// <summary>
+        /// True once *this* dashboard answers. A listening socket proves nothing, and
+        /// neither does a status code: any local service on this port can answer 404
+        /// to /api/sources, and the tray used to take that as "the dashboard is up"
+        /// and navigate to a stranger. Only the identity marker counts.
         /// </summary>
         public static bool IsServing(int timeoutMs)
         {
+            string body = Get(HealthUrl, timeoutMs);
+            string reason;
+            return IsOurHealth(body, out reason);
+        }
+
+        /// <summary>Whether a response body is this dashboard's health marker.</summary>
+        public static bool IsOurHealth(string body, out string reason)
+        {
+            reason = null;
+            if (string.IsNullOrEmpty(body))
+            {
+                reason = "no answer from " + HealthUrl;
+                return false;
+            }
+            if (body.IndexOf("\"" + AppId + "\"", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                reason = "something else is answering on port " + port + " (no '" + AppId + "' marker)";
+                return false;
+            }
+            return true;
+        }
+
+        public static string HealthUrl
+        {
+            get { return BaseUrl + "/api/health"; }
+        }
+
+        /// <summary>GETs a URL and returns the body, or null. Never throws.</summary>
+        private static string Get(string url, int timeoutMs)
+        {
             try
             {
-                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(BaseUrl + "/api/sources");
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
                 request.Proxy = null;
                 request.Method = "GET";
                 request.Timeout = timeoutMs;
@@ -79,50 +116,120 @@ namespace RouterMonitorTray
                 request.AllowAutoRedirect = false;
                 using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
                 {
-                    int code = (int)response.StatusCode;
-                    return code >= 200 && code < 500;
+                    if ((int)response.StatusCode < 200 || (int)response.StatusCode >= 300)
+                    {
+                        response.Close();
+                        return null;
+                    }
+                    using (StreamReader reader = new StreamReader(response.GetResponseStream()))
+                    {
+                        return reader.ReadToEnd();
+                    }
                 }
             }
             catch (WebException ex)
             {
-                // An HTTP error status still proves the app is up and serving.
                 HttpWebResponse response = ex.Response as HttpWebResponse;
                 if (response != null)
                 {
-                    int code = (int)response.StatusCode;
-                    response.Close();
-                    return code >= 200 && code < 500;
+                    try
+                    {
+                        using (StreamReader reader = new StreamReader(response.GetResponseStream()))
+                        {
+                            return reader.ReadToEnd();
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        response.Close();
+                    }
                 }
-                return false;
+                return null;
             }
             catch
             {
-                return false;
+                return null;
             }
         }
 
+        /// <summary>True when a socket is accepted on the port, whoever owns it.</summary>
+        public static bool PortIsTaken()
+        {
+            return IsListening(400);
+        }
+
+        /// <summary>Anti-hammer gap between launch attempts.</summary>
+        private const int LaunchCooldownMs = 5000;
+
+        private static DateTime lastLaunchUtc = DateTime.MinValue;
+
         /// <summary>
-        /// Launches the host script detached. Safe to call repeatedly: the script
-        /// itself is idempotent (it exits 0 when the port is already listening) and
-        /// this method additionally fires at most once per process, so a long
-        /// npm run build can never be started twice.
+        /// The script process from the last launch. It ends in $server.WaitForExit(),
+        /// so while it is alive a build or the server itself is in progress and a
+        /// second launch would only start a duplicate build. Once it has exited
+        /// without the dashboard answering, the attempt failed and retrying is
+        /// exactly what should happen - which is what the old one-shot flag made
+        /// impossible.
+        /// </summary>
+        private static Process launchProcess;
+
+        /// <summary>Why the last attempt did not produce a serving dashboard, or null.</summary>
+        public static string LastProblem { get; private set; }
+
+        /// <summary>
+        /// Launches the host script detached.
+        ///
+        /// The old version latched a "requested" flag that only cleared if Process.Start
+        /// threw, so a script that ran and failed (a broken build, a missing Node) left
+        /// the tray waiting 240 seconds and never trying again for the life of the
+        /// process. Attempts are now rate limited instead of one-shot: a long
+        /// npm run build still cannot be started twice, but opening the panel again
+        /// really does retry.
         /// </summary>
         public static void StartDetached()
         {
+            StartDetached(null);
+        }
+
+        /// <summary>Launches the host script, optionally asking it to restart a live server.</summary>
+        public static void StartDetached(string extraArguments)
+        {
             lock (Gate)
             {
-                if (launchRequested)
+                if (launchProcess != null)
+                {
+                    bool alive;
+                    try
+                    {
+                        alive = !launchProcess.HasExited;
+                    }
+                    catch (Exception)
+                    {
+                        alive = false;
+                    }
+                    if (alive)
+                    {
+                        return;
+                    }
+                    launchProcess = null;
+                }
+                if (DateTime.UtcNow - lastLaunchUtc < TimeSpan.FromMilliseconds(LaunchCooldownMs))
                 {
                     return;
                 }
-                launchRequested = true;
+                lastLaunchUtc = DateTime.UtcNow;
             }
 
+            string script = Path.Combine(ProjectRoot, @"scripts\start-dashboard.ps1");
             try
             {
-                string script = Path.Combine(ProjectRoot, @"scripts\start-dashboard.ps1");
                 if (!File.Exists(script))
                 {
+                    LastProblem = "missing " + script;
+                    PanelForm.LogInit("server: " + LastProblem);
                     return;
                 }
 
@@ -135,21 +242,44 @@ namespace RouterMonitorTray
 
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = shell;
-                psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + "\" -Port " + port;
+                psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + "\" -Port " + port +
+                    (string.IsNullOrEmpty(extraArguments) ? "" : " " + extraArguments);
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 psi.WorkingDirectory = ProjectRoot;
-                Process.Start(psi);
+                Process started = Process.Start(psi);
+                lock (Gate)
+                {
+                    launchProcess = started;
+                }
                 // Deliberately not awaited and not waited on: the script blocks on
                 // the server it just started, and it must outlive this call.
             }
-            catch
+            catch (Exception ex)
             {
+                // Let the next attempt happen immediately: nothing was launched.
                 lock (Gate)
                 {
-                    launchRequested = false;
+                    lastLaunchUtc = DateTime.MinValue;
                 }
+                LastProblem = "could not run " + script + ": " + ex.Message;
+                PanelForm.LogInit("server: " + LastProblem);
             }
+        }
+
+        /// <summary>
+        /// Stops whatever is serving on the port and starts it again. Only called for
+        /// our own server: the script refuses to touch a port it does not own.
+        /// </summary>
+        public static void RestartDetached()
+        {
+            lock (Gate)
+            {
+                lastLaunchUtc = DateTime.MinValue;
+                launchProcess = null;
+            }
+            LastProblem = null;
+            StartDetached("-Restart");
         }
 
         /// <summary>
@@ -158,26 +288,45 @@ namespace RouterMonitorTray
         /// </summary>
         public static async Task<bool> EnsureAsync(int timeoutMs, Action<string> progress)
         {
-            if (IsServing(800))
+            if (IsServing(1500))
             {
+                LastProblem = null;
                 return true;
             }
 
             if (progress != null)
             {
-                progress("正在启动本地服务…");
+                progress(PortIsTaken() ? "端口被占用，正在确认…" : "正在启动本地服务…");
             }
             StartDetached();
 
-            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            DateTime start = DateTime.UtcNow;
+            DateTime deadline = start.AddMilliseconds(timeoutMs);
             while (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(300).ConfigureAwait(false);
                 if (IsServing(1500))
                 {
+                    LastProblem = null;
                     return true;
                 }
+                // A stranger on the port will not move, and waiting four minutes to
+                // say so helps nobody.
+                if (DateTime.UtcNow - start > TimeSpan.FromSeconds(20) && PortIsTaken())
+                {
+                    string reason;
+                    IsOurHealth(Get(HealthUrl, 1500), out reason);
+                    LastProblem = reason ?? ("port " + port + " is taken by another program");
+                    PanelForm.LogInit("server: " + LastProblem);
+                    return false;
+                }
             }
+
+            if (LastProblem == null)
+            {
+                LastProblem = "the dashboard did not answer within " + (timeoutMs / 1000) + " s";
+            }
+            PanelForm.LogInit("server: " + LastProblem);
             return false;
         }
     }

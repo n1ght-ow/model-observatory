@@ -1,5 +1,6 @@
 param(
-    [int]$Port = 3000
+    [int]$Port = 3000,
+    [switch]$Restart
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,10 +45,42 @@ foreach ($rotating in @($ServerLogFile, $ServerErrorLogFile, $BuildLogFile, $Bui
     }
 }
 
+# Identity, not occupancy. "Something is listening on 3000" is not the same as
+# "our dashboard is up": an unrelated service on this port used to make this
+# script exit 0 while the tray happily navigated to a stranger.
+$AppId = "router-monitor-dashboard"
+$HealthUrl = "http://127.0.0.1:$Port/api/health"
+
+function Test-DashboardHealth {
+    try {
+        $response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 3
+        return ($response.StatusCode -eq 200 -and $response.Content -match [regex]::Escape($AppId))
+    } catch {
+        return $false
+    }
+}
+
 $existing = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-DashboardLog "Port $Port is already in use; leaving the existing dashboard running."
-    exit 0
+    if (Test-DashboardHealth) {
+        if (-not $Restart) {
+            Write-DashboardLog "Port $Port is already serving this dashboard; leaving it running."
+            exit 0
+        }
+        $owners = @($existing | Select-Object -ExpandProperty OwningProcess -Unique)
+        Write-DashboardLog "Restart requested; stopping the dashboard on port $Port (pid $($owners -join ','))."
+        foreach ($owner in $owners) {
+            Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
+        }
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline) {
+            if (-not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { break }
+            Start-Sleep -Milliseconds 300
+        }
+    } else {
+        Write-DashboardLog "Port $Port is held by another program (no '$AppId' health marker); refusing to fight over it."
+        exit 1
+    }
 }
 
 if (-not (Test-Path -LiteralPath $NodeExe)) {
