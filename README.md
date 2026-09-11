@@ -238,20 +238,43 @@ place by a pixel-diff tool that scored the panel against browser screenshots.
 
 Across the whole change: **11,201 lines deleted, 547 added.**
 
-### Viewport
+### Viewport and size
 
 The page is laid out at exactly **1688x935 CSS pixels** — the size the reference
 screenshots were taken at — so the flyout never falls into the app's responsive
-layout. WebView2 already scales content by the display scale, so the flyout keeps
-`ZoomFactor` at **1.0** (exactly the browser's rendering) and sizes the window to
-`1688 x 935 x display scale`. On this machine (2560x1600 at 150%) that is a
-2532x1402 window whose page reports `innerWidth x innerHeight = 1688x935` and
-`devicePixelRatio = 1.5` — the same numbers a maximised browser gives.
+layout. That is achieved by pairing the window size with `ZoomFactor`; the two move
+together so the CSS viewport is constant while the drawn size is not.
 
-Option (a) of the two allowed was chosen: the panel's physical size is the CSS size
-times the display scale, and it only shrinks — never re-lays-out — if it would not
-fit the work area, by lowering the window size and `ZoomFactor` together so the
-CSS viewport stays 1688x935.
+The drawn size is **70% of the browser's own** (`UserScale` in `PanelForm.cs`).
+At 150% display scaling that means `ZoomFactor = 0.7` and a window of
+**1772x1002**, whose page still reports `innerWidth x innerHeight = 1688x935`.
+Without the 0.7 the window would be 2532x1402 — on a 2560x1600 panel that is 99% of
+the width and 88% of the height, i.e. effectively full screen, which is what the
+original brief produced and what made the panel feel wrong to use.
+
+If even the reduced size would not fit the work area, the window and `ZoomFactor`
+are lowered together again; the **layout never changes**, only the drawn size.
+
+### Moving the window
+
+The panel is freely draggable. It has no title bar (`WS_CAPTION` is masked off, so
+the window cannot expose one), so a **grip strip** 20 physical pixels tall sits above
+the page and carries the three-bar hint; the page is placed *below* the strip so the
+strip covers no content. Dragging it runs Windows' own move loop — the strip issues
+`WM_NCLBUTTONDOWN` with `HTCAPTION` after releasing capture.
+
+Two things had to give way for this, both of which were inherited from the hand-drawn
+panel and were what actually blocked dragging:
+
+- the `WM_WINDOWPOSCHANGING` / `WM_MOVING` handler used to snap the window back to
+  its anchor on every reposition, so any move was undone immediately;
+- `WM_SYSCOMMAND` with `SC_MOVE` was swallowed. That is the message a caption drag
+  sends, so the move loop started and then died. `SC_SIZE` is still blocked.
+
+The anchor is now only the *initial* placement. Once the window has been moved by
+hand it keeps that position, and `KeepOnScreen` pulls it back into view if it is ever
+dragged off the desktop — the panel has no taskbar entry, so an off-screen window
+would otherwise be unrecoverable.
 
 ### Performance
 
@@ -269,6 +292,7 @@ applications' WebView2 instances are never included.
 | Scenario | Measured | Target |
 | --- | --- | --- |
 | Click tray icon → panel visible | same frame (a `Show()`) | 200 ms |
+| Drag the grip → window moved | follows the pointer exactly (verified by simulated drag: 240x80 px input, 240x80 px moved) | — |
 | **Reopen after suspend** (script round-trip into the resumed renderer) | **60–73 ms** | 200 ms |
 | **In-panel navigation** (click a sidebar link → route changed) | **45–47 ms** | no perceptible stall |
 | First open of the process: navigation complete → **interactive** | 556 ms → **+327 ms = ~0.9 s** | see note |

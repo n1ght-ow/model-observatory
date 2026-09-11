@@ -25,12 +25,29 @@ namespace RouterMonitorTray
         public const int CssWidth = 1688;
         public const int CssHeight = 935;
 
+        /// <summary>
+        /// How much of the display-scale rendering to use. 1.0 gives the browser's
+        /// own size (a 2532x1402 window at 150% scaling, which fills almost the
+        /// whole screen); 0.7 is a comfortable window that still lays the page out
+        /// at the full 1688x935 CSS viewport, so the layout is untouched and only
+        /// the drawn size changes.
+        /// </summary>
+        private const float UserScale = 0.7f;
+
+        /// <summary>
+        /// Height of the grip strip above the page, in physical pixels. At 150%
+        /// display scaling this is ~13 logical pixels, close to a normal title bar.
+        /// </summary>
+        private const int DragStripHeight = 20;
+
         private const int ScreenMargin = 24;
         private const int WM_NCHITTEST = 0x0084;
         private const int WM_SYSCOMMAND = 0x0112;
         private const int WM_WINDOWPOSCHANGING = 0x0046;
         private const int WM_MOVING = 0x0216;
+        private const int WM_NCLBUTTONDOWN = 0x00A1;
         private const int HTCLIENT = 1;
+        private const int HTCAPTION = 2;
         private const int SC_SIZE = 0xF000;
         private const int SC_MOVE = 0xF010;
 
@@ -57,6 +74,7 @@ namespace RouterMonitorTray
 
         private readonly WebView2 webView;
         private readonly Label loading;
+        private readonly Panel dragStrip;
         private readonly float dpiScale;   // display scale, e.g. 1.5 at 150%
         private readonly float scale;      // physical pixels per CSS pixel
         private readonly double webZoom;   // the ZoomFactor that produces it
@@ -66,11 +84,17 @@ namespace RouterMonitorTray
         private bool webViewFailed;
         private bool suspended;
         private bool initStarted;
+        private bool userMoved;
         private int suspendResult = -1;
 
         private Point anchor;
-        private bool hasAnchor;
         private string startPage = "/";
+
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
 
         /// <summary>Which dashboard route the flyout opens on (used by the evidence tool).</summary>
         public string StartPage
@@ -124,26 +148,135 @@ namespace RouterMonitorTray
             Text = "Router Monitor";
             BackColor = Color.FromArgb(255, 255, 255);
 
+            // The drag strip sits above the page rather than over it, so the page
+            // keeps its full 1688x935 CSS viewport and nothing is covered.
             ClientSize = new Size(
                 (int)Math.Round(CssWidth * scale),
-                (int)Math.Round(CssHeight * scale));
+                (int)Math.Round(CssHeight * scale) + DragStripHeight);
+
+            // Positions are assigned explicitly rather than by docking. Docking a
+            // Top strip in front of a Fill sibling does not reserve its height (the
+            // front-most control lays out last, after Fill has taken everything), and
+            // the strip has to be in front or WebView2's own window paints over it.
+            dragStrip = new Panel();
+            dragStrip.BackColor = Color.FromArgb(255, 255, 255);
+            dragStrip.Cursor = Cursors.SizeAll;
+            dragStrip.MouseDown += OnDragStripMouseDown;
+            dragStrip.MouseMove += OnDragStripMouseMove;
+            dragStrip.MouseUp += OnDragStripMouseUp;
+            dragStrip.Paint += OnDragStripPaint;
 
             webView = new WebView2();
-            webView.Dock = DockStyle.Fill;
             webView.DefaultBackgroundColor = Color.White;
-            Controls.Add(webView);
 
             // A single label, shown only while the local server is starting or the
             // first page is still loading. It deliberately imitates nothing.
             loading = new Label();
-            loading.Dock = DockStyle.Fill;
             loading.TextAlign = ContentAlignment.MiddleCenter;
             loading.BackColor = Color.FromArgb(255, 255, 255);
             loading.ForeColor = Color.FromArgb(120, 120, 120);
             loading.Font = new Font("Segoe UI", 11f, FontStyle.Regular);
             loading.Text = "正在启动本地服务…";
+
+            Controls.Add(webView);
             Controls.Add(loading);
+            Controls.Add(dragStrip);
+            LayoutChildren();
+        }
+
+        protected override void OnLayout(LayoutEventArgs e)
+        {
+            base.OnLayout(e);
+            LayoutChildren();
+        }
+
+        /// <summary>
+        /// Gives the page exactly CssHeight*scale physical pixels - the strip is added
+        /// above that, never taken out of it - so the CSS viewport stays 1688x935 and
+        /// the strip covers no content. Z-order puts the strip in front of the page and
+        /// the loading label in front of the page but behind the strip.
+        /// </summary>
+        private void LayoutChildren()
+        {
+            if (webView == null || dragStrip == null || loading == null)
+            {
+                return;
+            }
+            int w = ClientSize.Width;
+            int h = ClientSize.Height;
+            int strip = Math.Min(DragStripHeight, h);
+            int pageH = Math.Max(0, h - strip);
+
+            dragStrip.Bounds = new Rectangle(0, 0, w, strip);
+            webView.Bounds = new Rectangle(0, strip, w, pageH);
+            loading.Bounds = new Rectangle(0, strip, w, pageH);
+
             loading.BringToFront();
+            dragStrip.BringToFront();
+        }
+
+        /// <summary>
+        /// Starts a window move the way a title bar would. The window has no caption
+        /// (WS_CAPTION is masked off), so the default drag path does not exist and it
+        /// is synthesised here: capture release plus a non-client hit-test that says
+        /// "caption", after which Windows runs its own move loop.
+        /// </summary>
+        private void OnDragStripMouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+            userMoved = true;
+            ReleaseCapture();
+            SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+        }
+
+        private void OnDragStripMouseMove(object sender, MouseEventArgs e)
+        {
+            if (dragStrip.Capture)
+            {
+                return;
+            }
+            // Keep the grip affordance but never a grab cursor: while the move loop
+            // runs, Windows owns the cursor.
+            dragStrip.Cursor = Cursors.SizeAll;
+        }
+
+        private void OnDragStripMouseUp(object sender, MouseEventArgs e)
+        {
+            KeepOnScreen();
+        }
+
+        /// <summary>
+        /// Draws the grip: three short bars, the usual hint that a strip can be
+        /// dragged, plus a hairline under the strip so it reads as window chrome
+        /// rather than as part of the page.
+        /// </summary>
+        private void OnDragStripPaint(object sender, PaintEventArgs e)
+        {
+            try
+            {
+                int w = dragStrip.Width;
+                int h = dragStrip.Height;
+                using (Pen grip = new Pen(Color.FromArgb(110, 120, 120, 120), 2f))
+                {
+                    int cx = w / 2;
+                    int cy = h / 2;
+                    for (int i = -1; i <= 1; i++)
+                    {
+                        int x = cx + (i * 7);
+                        e.Graphics.DrawLine(grip, x, cy - 3, x, cy + 3);
+                    }
+                }
+                using (Pen edge = new Pen(Color.FromArgb(28, 0, 0, 0), 1f))
+                {
+                    e.Graphics.DrawLine(edge, 0, h - 1, w, h - 1);
+                }
+            }
+            catch
+            {
+            }
         }
 
         private static float DetectDpiScale()
@@ -179,6 +312,8 @@ namespace RouterMonitorTray
         /// </summary>
         private static float ComputeScale(float dpiScale)
         {
+            // Aim for 70% of the browser's own size, then give up size (never the
+            // layout) if that still would not fit the work area.
             float fit = dpiScale;
             try
             {
@@ -187,7 +322,7 @@ namespace RouterMonitorTray
                 {
                     Rectangle work = screen.WorkingArea;
                     float fitX = (work.Width - ScreenMargin) / (float)CssWidth;
-                    float fitY = (work.Height - ScreenMargin) / (float)CssHeight;
+                    float fitY = (work.Height - ScreenMargin - DragStripHeight) / (float)CssHeight;
                     fit = Math.Min(fitX, fitY);
                 }
             }
@@ -195,7 +330,7 @@ namespace RouterMonitorTray
             {
             }
 
-            float value = Math.Min(dpiScale, fit);
+            float value = Math.Min(dpiScale * UserScale, fit);
             if (value < 0.25f)
             {
                 value = 0.25f;
@@ -226,8 +361,30 @@ namespace RouterMonitorTray
         public void AnchorTo(Point position)
         {
             anchor = position;
-            hasAnchor = true;
             Location = position;
+        }
+
+        /// <summary>
+        /// Pulls a window that has ended up off the desktop back into view. Moving is
+        /// free, but dragging the panel somewhere unreachable would strand it: it has
+        /// no taskbar entry to restore it from.
+        /// </summary>
+        private void KeepOnScreen()
+        {
+            try
+            {
+                Rectangle target = Screen.FromControl(this).WorkingArea;
+                int x = Math.Min(Math.Max(Left, target.Left), target.Right - Width);
+                int y = Math.Min(Math.Max(Top, target.Top), target.Bottom - Height);
+                if (x != Left || y != Top)
+                {
+                    Location = new Point(x, y);
+                    anchor = Location;
+                }
+            }
+            catch
+            {
+            }
         }
 
         protected override void WndProc(ref Message m)
@@ -237,25 +394,23 @@ namespace RouterMonitorTray
                 m.Result = (IntPtr)HTCLIENT;
                 return;
             }
+            // SC_SIZE stays blocked (there is no resize border to grab anyway), but
+            // SC_MOVE must be allowed through: the caption-drag started by the strip
+            // arrives as exactly this message, and swallowing it was what made the
+            // panel refuse to move even after the anchor pull-back was removed.
             if (m.Msg == WM_SYSCOMMAND)
             {
                 int command = m.WParam.ToInt32() & 0xFFF0;
-                if (command == SC_MOVE || command == SC_SIZE)
+                if (command == SC_SIZE)
                 {
                     m.Result = IntPtr.Zero;
                     return;
                 }
             }
-            if ((m.Msg == WM_WINDOWPOSCHANGING || m.Msg == WM_MOVING) && hasAnchor && Visible)
-            {
-                WINDOWPOS pos = (WINDOWPOS)Marshal.PtrToStructure(m.LParam, typeof(WINDOWPOS));
-                if (pos.x != anchor.X || pos.y != anchor.Y)
-                {
-                    pos.x = anchor.X;
-                    pos.y = anchor.Y;
-                    Marshal.StructureToPtr(pos, m.LParam, false);
-                }
-            }
+            // The window used to be pinned to its anchor here, which is exactly what
+            // made it undraggable. It is now freely movable: the anchor is only the
+            // initial placement, and KeepOnScreen stops a drag from losing it off
+            // the edge of the desktop.
             base.WndProc(ref m);
         }
 
@@ -333,7 +488,16 @@ namespace RouterMonitorTray
             // webview to be invisible when Resume() runs, otherwise the call is
             // rejected and the page stays frozen.
             RestoreWebView();
-            PositionNearTray();
+            // Only placed automatically until the user has moved it themselves; after
+            // that the window keeps whatever position it was dragged to.
+            if (userMoved)
+            {
+                KeepOnScreen();
+            }
+            else
+            {
+                PositionNearTray();
+            }
             Visible = true;
             BringToFront();
             Activate();
@@ -405,8 +569,9 @@ namespace RouterMonitorTray
             {
                 return await webView.CoreWebView2.ExecuteScriptAsync(script);
             }
-            catch
+            catch (Exception ex)
             {
+                LogInit("ExecuteScriptAsync failed: " + ex.Message);
                 return null;
             }
         }
@@ -443,6 +608,8 @@ namespace RouterMonitorTray
 
             int x = cursor.X - Width + (int)(24 * scale);
             int y = cursor.Y - Height - (int)(10 * scale);
+            // Height already includes the drag strip, so the strip - not the page -
+            // is what ends up level with the tray icon's row.
 
             if (y < work.Top)
             {
