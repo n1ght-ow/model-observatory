@@ -230,7 +230,7 @@ place by a pixel-diff tool that scored the panel against browser screenshots.
 
 |  | Hand-drawn (before) | WebView2 (now) |
 | --- | --- | --- |
-| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** |
+| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port, 3,002 / 5 now |
 | Compiler | `csc.exe` (.NET Framework) | `csc.exe` — unchanged |
 | Executable | 530 KB | 55 KB (+ WebView2 DLLs) |
 | Fidelity | hand-matched, pixel by pixel | identical by construction |
@@ -400,6 +400,54 @@ host launches it detached and never waits on it — a `WaitForExit()` there woul
 block the UI thread forever with no error. The script is safe to call repeatedly:
 it exits immediately when the port is already listening, and the host additionally
 fires it at most once per process so a long `npm run build` cannot be started twice.
+
+### Control channel
+
+The tray is driven through a named pipe, not through command line switches. The
+wire format is one JSON envelope per line - `{v, id, cmd, args}` in,
+`{v, id, ok, error, result}` back on the same connection - and the pipe is
+per-user, so two accounts on one machine cannot drive each other's tray.
+
+```powershell
+# any command, from any script, against the tray that is already running
+dist\tray\RouterMonitorTray.exe --ctl ping --report logs\verify\ping.txt
+dist\tray\RouterMonitorTray.exe --ctl show
+```
+
+`--ctl <cmd>` is the only client entry point the executable has: it sends one
+command and writes the answer, so a new capability never adds a switch.
+`ping` reports the commands the running tray knows, so the channel is
+discoverable without reading the source.
+
+| Command | What it does |
+| --- | --- |
+| `ping` | build, pid, panel/webview/suspend state, whether the server is serving, command list |
+| `show` / `hide` / `toggle` | open, close or flip the flyout |
+| `reload` | reload the page in place |
+| `probe` | viewport, DPR, page title, document size, WebView2 core, bridge state |
+| `shot` | `args.path` - save the flyout as it appears on screen |
+| `quit` | tear down the way the menu's Quit does |
+
+Adding a command is **one row in `RegisterControlHandlers()`** in
+`tray/Program.cs` and nothing else: not `Main`, not the menu, not the command
+line, not the diagnostics. That is the point of the channel - it is where a new
+capability goes.
+
+Two consequences worth knowing:
+
+- **A second launch no longer dies without a word.** It asks the running tray to
+  show the panel and exits 0; with no tray running it starts one.
+- **The diagnostics prefer the tray that is already running.** `--probe` and
+  `--shot` are forwarded over the channel whenever an instance answers, because
+  standing up a second WebView2 on the same user data folder is a documented way
+  to break both of them. `--cycle` still measures itself in its own process: it
+  drives the panel through a visible/hidden/reopen sequence, and it moves onto
+  the channel as the rest of the diagnostics do.
+
+Quitting, logging off and shutting down all teardown the same way - the icon
+goes, the WebView is suspended and disposed, and the exit is recorded in
+`logs/tray-init.log` as `shutdown: <reason>`. Killing the process was what used
+to leave `msedgewebview2` children holding the profile lock.
 
 ### Escaping the flyout
 

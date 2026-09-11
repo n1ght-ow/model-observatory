@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -132,6 +133,37 @@ namespace RouterMonitorTray
         public bool WebViewFailed
         {
             get { return webViewFailed; }
+        }
+
+        /// <summary>
+        /// Creates the window handle without showing anything. The control channel
+        /// marshals work onto this form's thread, and BeginInvoke needs a handle to
+        /// post to - the tray has one from startup, before the panel is ever opened.
+        /// </summary>
+        public void EnsureHandle()
+        {
+            if (!IsHandleCreated)
+            {
+                CreateHandle();
+            }
+        }
+
+        /// <summary>
+        /// Waits until the first page has painted. Polls rather than blocks, so it
+        /// has to be awaited from the UI thread's own message loop.
+        /// </summary>
+        public async Task<bool> WaitForContentAsync(int timeoutMs)
+        {
+            Stopwatch clock = Stopwatch.StartNew();
+            while (clock.ElapsedMilliseconds < timeoutMs)
+            {
+                if (IsContentReady)
+                {
+                    return true;
+                }
+                await Task.Delay(100);
+            }
+            return IsContentReady;
         }
 
         public PanelForm()

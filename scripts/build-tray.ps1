@@ -76,7 +76,10 @@ $arguments = @(
     "/r:System.dll",
     "/r:System.Drawing.dll",
     "/r:System.Windows.Forms.dll",
-    "/r:System.Management.dll"
+    "/r:System.Management.dll",
+    # JavaScriptSerializer, for the control channel's JSON envelope. Part of the
+    # .NET Framework the build already uses - not a new dependency.
+    "/r:System.Web.Extensions.dll"
 )
 foreach ($assembly in $webViewAssemblies) {
     $arguments += "/r:$assembly"

@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -22,11 +23,14 @@ namespace RouterMonitorTray
         private readonly NotifyIcon notifyIcon;
         private readonly PanelForm panel;
         private readonly ContextMenuStrip menu;
+        private readonly ControlServer control;
         private ToolStripMenuItem itemAutoStart;
         private ToolStripMenuItem itemPin;
         private readonly Icon trayIcon;
         private bool disposed;
         private bool autoStart;
+        private int shuttingDown;
+        private readonly ManualResetEvent shutdownDone = new ManualResetEvent(false);
 
         public TrayContext(bool startVisible)
         {
@@ -37,6 +41,10 @@ namespace RouterMonitorTray
             }
 
             panel = new PanelForm();
+            // The control channel answers on another thread and marshals onto this one,
+            // so the window handle has to exist from startup - not only once somebody
+            // has opened the panel.
+            panel.EnsureHandle();
             menu = BuildMenu();
 
             notifyIcon = new NotifyIcon();
@@ -49,6 +57,10 @@ namespace RouterMonitorTray
 
             autoStart = HasAutoStart();
             itemAutoStart.Checked = autoStart;
+
+            control = new ControlServer(ControlProtocol.PipeName);
+            RegisterControlHandlers();
+            control.Start();
 
             if (startVisible)
             {
@@ -222,7 +234,287 @@ namespace RouterMonitorTray
 
         private void Quit()
         {
-            ExitThread();
+            BeginShutdown("menu:quit");
+        }
+
+        /// <summary>
+        /// The whole control channel in one place. A new tray capability is one row
+        /// here; nothing in Main, in the menu or on the command line has to learn
+        /// about a command for it to become reachable.
+        /// </summary>
+        private void RegisterControlHandlers()
+        {
+            control.Register("ping", HandlePing);
+            control.Register("show", HandleShow);
+            control.Register("hide", HandleHide);
+            control.Register("toggle", HandleToggle);
+            control.Register("reload", HandleReload);
+            control.Register("probe", HandleProbe);
+            control.Register("shot", HandleShot);
+            control.Register("quit", HandleQuit);
+        }
+
+        /// <summary>State of the tray, and the command list, so the channel is discoverable.</summary>
+        private ControlResponse HandlePing(ControlRequest request)
+        {
+            List<string> lines = new List<string>();
+            Dictionary<string, object> fields = new Dictionary<string, object>();
+            string[] names = control.Commands();
+
+            AddLine(lines, fields, "version", Program.Version());
+            AddLine(lines, fields, "pid", Process.GetCurrentProcess().Id.ToString());
+            AddLine(lines, fields, "panel visible", panel.Visible ? "yes" : "no");
+            AddLine(lines, fields, "webview ready", panel.IsContentReady ? "yes" : "no");
+            AddLine(lines, fields, "webview failed", panel.WebViewFailed ? "yes" : "no");
+            AddLine(lines, fields, "suspend", panel.SuspendState);
+            AddLine(lines, fields, "server serving", ServerHost.IsServing(2000) ? "yes" : "no");
+            AddLine(lines, fields, "commands", string.Join(", ", names));
+
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["lines"] = lines;
+            result["fields"] = fields;
+            return ControlResponse.Success(request.id, result);
+        }
+
+        private ControlResponse HandleShow(ControlRequest request)
+        {
+            return Complete(OnUi(delegate { panel.ShowPanel(); return PanelState(); }), 15000, request.id);
+        }
+
+        private ControlResponse HandleHide(ControlRequest request)
+        {
+            return Complete(OnUi(delegate { panel.HidePanel(); return PanelState(); }), 15000, request.id);
+        }
+
+        private ControlResponse HandleToggle(ControlRequest request)
+        {
+            return Complete(OnUi(delegate { panel.TogglePanel(); return PanelState(); }), 15000, request.id);
+        }
+
+        private ControlResponse HandleReload(ControlRequest request)
+        {
+            return Complete(OnUi(delegate { panel.Reload(); return PanelState(); }), 15000, request.id);
+        }
+
+        /// <summary>What the flyout looks like right now; the answer to every panel command.</summary>
+        private Dictionary<string, object> PanelState()
+        {
+            List<string> lines = new List<string>();
+            Dictionary<string, object> fields = new Dictionary<string, object>();
+            AddLine(lines, fields, "panel visible", panel.Visible ? "yes" : "no");
+            AddLine(lines, fields, "webview ready", panel.IsContentReady ? "yes" : "no");
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["lines"] = lines;
+            result["fields"] = fields;
+            return result;
+        }
+
+        private ControlResponse HandleProbe(ControlRequest request)
+        {
+            int timeout = ArgInt(request, "timeout", 60000);
+            return Complete(OnUiAsync(delegate
+            {
+                return Diagnostics.ProbeAsync(panel, null, timeout);
+            }), timeout + 30000, request.id);
+        }
+
+        private ControlResponse HandleShot(ControlRequest request)
+        {
+            string path = ArgString(request, "path", null);
+            if (string.IsNullOrEmpty(path))
+            {
+                return ControlResponse.Failure(request.id, "shot needs a 'path' argument");
+            }
+            int timeout = ArgInt(request, "timeout", 60000);
+            return Complete(OnUiAsync(delegate
+            {
+                return Diagnostics.ShotAsync(panel, path, timeout);
+            }), timeout + 30000, request.id);
+        }
+
+        /// <summary>
+        /// Answers first and tears down afterwards: the reply has to reach the caller
+        /// before the process that would have written it disappears.
+        /// </summary>
+        private ControlResponse HandleQuit(ControlRequest request)
+        {
+            BeginShutdown("control:quit");
+            return ControlResponse.Success(request.id, null);
+        }
+
+        /// <summary>
+        /// Tears the tray down the way the menu's Quit does. Safe from any thread and
+        /// safe to call twice; the first caller wins.
+        /// </summary>
+        public void BeginShutdown(string reason)
+        {
+            if (Interlocked.Exchange(ref shuttingDown, 1) != 0)
+            {
+                return;
+            }
+            PanelForm.LogInit("shutdown: " + reason);
+            try
+            {
+                if (panel != null && panel.IsHandleCreated && panel.InvokeRequired)
+                {
+                    // Coming from the control channel or a session event: let the UI
+                    // thread do its own teardown, in its own order.
+                    panel.BeginInvoke((MethodInvoker)delegate
+                    {
+                        Dispose();
+                        ExitThread();
+                    });
+                }
+                else
+                {
+                    Dispose();
+                    ExitThread();
+                }
+            }
+            catch (Exception ex)
+            {
+                PanelForm.LogInit("shutdown failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>Whether the caller is off the UI thread.</summary>
+        public bool InvokeRequired
+        {
+            get { return panel != null && panel.InvokeRequired; }
+        }
+
+        /// <summary>
+        /// Blocks until teardown has finished. Only used when the session is ending,
+        /// where the caller is on another thread and the process is about to go away.
+        /// </summary>
+        public bool WaitForShutdown(int timeoutMs)
+        {
+            return shutdownDone.WaitOne(timeoutMs);
+        }
+
+        /// <summary>Runs a synchronous action on the panel's own thread.</summary>
+        private Task<Dictionary<string, object>> OnUi(Func<Dictionary<string, object>> work)
+        {
+            TaskCompletionSource<Dictionary<string, object>> done =
+                new TaskCompletionSource<Dictionary<string, object>>();
+            try
+            {
+                panel.BeginInvoke((MethodInvoker)delegate
+                {
+                    try
+                    {
+                        done.TrySetResult(work());
+                    }
+                    catch (Exception ex)
+                    {
+                        done.TrySetException(ex);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                done.TrySetException(ex);
+            }
+            return done.Task;
+        }
+
+        /// <summary>
+        /// Starts an asynchronous action on the panel's thread and lets its message
+        /// loop keep running, which is the only way an ExecuteScriptAsync round trip
+        /// can ever complete.
+        /// </summary>
+        private Task<Dictionary<string, object>> OnUiAsync(Func<Task<Dictionary<string, object>>> work)
+        {
+            TaskCompletionSource<Dictionary<string, object>> done =
+                new TaskCompletionSource<Dictionary<string, object>>();
+            try
+            {
+                panel.BeginInvoke((MethodInvoker)delegate
+                {
+                    Task<Dictionary<string, object>> task;
+                    try
+                    {
+                        task = work();
+                    }
+                    catch (Exception ex)
+                    {
+                        done.TrySetException(ex);
+                        return;
+                    }
+                    task.ContinueWith(delegate(Task<Dictionary<string, object>> finished)
+                    {
+                        if (finished.IsFaulted)
+                        {
+                            done.TrySetException(finished.Exception.InnerExceptions[0]);
+                        }
+                        else if (finished.IsCanceled)
+                        {
+                            done.TrySetCanceled();
+                        }
+                        else
+                        {
+                            done.TrySetResult(finished.Result);
+                        }
+                    });
+                });
+            }
+            catch (Exception ex)
+            {
+                done.TrySetException(ex);
+            }
+            return done.Task;
+        }
+
+        /// <summary>Waits for UI work off the UI thread, so a stuck panel cannot wedge the channel.</summary>
+        private static ControlResponse Complete(Task<Dictionary<string, object>> task, int timeoutMs, string id)
+        {
+            try
+            {
+                if (!task.Wait(timeoutMs))
+                {
+                    return ControlResponse.Failure(id, "the panel did not finish within " + timeoutMs + " ms");
+                }
+            }
+            catch (AggregateException ex)
+            {
+                return ControlResponse.Failure(id, ex.InnerExceptions[0].Message);
+            }
+            catch (Exception ex)
+            {
+                return ControlResponse.Failure(id, ex.Message);
+            }
+            return ControlResponse.Success(id, task.Result);
+        }
+
+        private static void AddLine(List<string> lines, Dictionary<string, object> fields, string label, string value)
+        {
+            if (value == null)
+            {
+                value = "(null)";
+            }
+            lines.Add(label.PadRight(16) + ": " + value);
+            fields[label] = value;
+        }
+
+        private static string ArgString(ControlRequest request, string name, string fallback)
+        {
+            object raw;
+            if (request.args != null && request.args.TryGetValue(name, out raw) && raw != null)
+            {
+                return Convert.ToString(raw);
+            }
+            return fallback;
+        }
+
+        private static int ArgInt(ControlRequest request, string name, int fallback)
+        {
+            string raw = ArgString(request, name, null);
+            int value;
+            if (!string.IsNullOrEmpty(raw) && int.TryParse(raw, out value))
+            {
+                return value;
+            }
+            return fallback;
         }
 
         protected override void Dispose(bool disposing)
@@ -247,6 +539,7 @@ namespace RouterMonitorTray
                 {
                     trayIcon.Dispose();
                 }
+                shutdownDone.Set();
             }
             base.Dispose(disposing);
         }
@@ -755,8 +1048,26 @@ namespace RouterMonitorTray
             }
         }
 
+        private const string MutexName = "RouterMonitorTray.SingleInstance";
+
+        private static TrayContext context;
+
+        /// <summary>The build this process is, for the control channel's `ping`.</summary>
+        internal static string Version()
+        {
+            try
+            {
+                Version version = Assembly.GetExecutingAssembly().GetName().Version;
+                return version == null ? "(unknown)" : version.ToString();
+            }
+            catch
+            {
+                return "(unknown)";
+            }
+        }
+
         [STAThread]
-        private static void Main(string[] args)
+        private static int Main(string[] args)
         {
             AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
             {
@@ -792,34 +1103,208 @@ namespace RouterMonitorTray
                 output = shot;
             }
 
+            string report = ArgValue(args, "--report");
+            string page = ArgValue(args, "--page");
+            int waitMs = ArgInt(ArgValue(args, "--wait"), 60000);
+            int holdMs = ArgInt(ArgValue(args, "--hold"), 30000);
+            string ctl = ArgValue(args, "--ctl");
+
+            // 1. Generic client: send exactly one command to the tray that is already
+            //    running and print its answer. This is what lets a script reach any
+            //    capability without this program growing one command line switch per
+            //    capability.
+            if (!string.IsNullOrEmpty(ctl))
+            {
+                return ForwardCommand(ctl, null, report);
+            }
+
+            // 2. Diagnostics prefer the tray that is already running. Standing up a
+            //    second WebView2 on the same user data folder is the documented way to
+            //    break both of them, so a live instance is asked to measure itself.
+            //    (`cycle` still measures itself locally: it drives the panel through a
+            //    visible/hidden/reopen sequence and is being folded into the channel
+            //    as the diagnostics move across.)
             if (mode != null)
             {
+                if (mode != "cycle" && InstanceRunning())
+                {
+                    Dictionary<string, object> args2 = new Dictionary<string, object>();
+                    if (!string.IsNullOrEmpty(output))
+                    {
+                        args2["path"] = output;
+                    }
+                    if (!string.IsNullOrEmpty(page))
+                    {
+                        args2["page"] = page;
+                    }
+                    args2["waitMs"] = waitMs;
+                    args2["holdMs"] = holdMs;
+                    return ForwardCommand(mode, args2, report);
+                }
                 Guarded(delegate
                 {
                     TryEnableDpiAwareness();
                     Application.EnableVisualStyles();
                     Application.SetCompatibleTextRenderingDefault(false);
-                    Application.Run(new CliContext(mode, output, ArgValue(args, "--report"),
-                        ArgValue(args, "--page"), ArgInt(ArgValue(args, "--wait"), 60000),
-                        ArgInt(ArgValue(args, "--hold"), 30000)));
+                    Application.Run(new CliContext(mode, output, report, page, waitMs, holdMs));
                 });
-                return;
+                return 0;
             }
 
-            // Single instance: a second launch just exits.
+            // 3. Normal start. Exactly one process owns the tray; a second launch asks
+            //    the owner to show the panel instead of dying without a word.
             bool created;
-            using (Mutex mutex = new Mutex(true, "RouterMonitorTray.SingleInstance", out created))
+            using (Mutex mutex = new Mutex(true, MutexName, out created))
             {
                 if (!created)
                 {
-                    return;
+                    return ForwardCommand("show", null, report);
                 }
                 TryEnableDpiAwareness();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new TrayContext(HasFlag(args, "--panel")));
+
+                context = new TrayContext(HasFlag(args, "--panel"));
+                Application.ApplicationExit += delegate { ShutdownContext("ApplicationExit"); };
+                try
+                {
+                    SystemEvents.SessionEnding += OnSessionEnding;
+                }
+                catch (Exception ex)
+                {
+                    ReportCrash("SessionEnding hook: " + ex.Message);
+                }
+                try
+                {
+                    Application.Run(context);
+                }
+                finally
+                {
+                    ShutdownContext("message loop ended");
+                }
                 GC.KeepAlive(mutex);
             }
+            return 0;
+        }
+
+        /// <summary>
+        /// True when another process owns the tray mutex. Probed by trying to create
+        /// the mutex and releasing it again immediately.
+        /// </summary>
+        private static bool InstanceRunning()
+        {
+            try
+            {
+                bool created;
+                using (Mutex probe = new Mutex(true, MutexName, out created))
+                {
+                    if (created)
+                    {
+                        probe.ReleaseMutex();
+                        return false;
+                    }
+                    return true;
+                }
+            }
+            catch (Exception)
+            {
+                // A mutex that exists but cannot be opened still means somebody is there.
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Sends one command to the running tray. Returns the process exit code:
+        /// 0 answered, 2 nobody answered, 3 the tray answered with a failure.
+        /// </summary>
+        private static int ForwardCommand(string cmd, Dictionary<string, object> args, string report)
+        {
+            AttachParentConsole();
+            ControlResponse response;
+            string error;
+            if (!ControlClient.TrySend(cmd, args, ControlProtocol.ConnectTimeoutMs, out response, out error))
+            {
+                string message = "no running tray answered '" + cmd + "': " + error;
+                Console.WriteLine(message);
+                WriteReport(report, new string[] { "error           : " + message });
+                return 2;
+            }
+            List<string> lines = response.Lines();
+            for (int i = 0; i < lines.Count; i++)
+            {
+                Console.WriteLine(lines[i]);
+            }
+            WriteReport(report, lines.ToArray());
+            return response.ok ? 0 : 3;
+        }
+
+        private static void WriteReport(string path, string[] lines)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return;
+            }
+            try
+            {
+                string full = Path.GetFullPath(path);
+                string dir = Path.GetDirectoryName(full);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+                File.WriteAllLines(full, lines);
+            }
+            catch (Exception ex)
+            {
+                ReportCrash("report: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// A winexe has no console of its own; borrowing the launching console is what
+        /// makes `--ctl` usable straight from a shell.
+        /// </summary>
+        private static void AttachParentConsole()
+        {
+            try
+            {
+                AttachConsole(-1); // ATTACH_PARENT_PROCESS
+            }
+            catch
+            {
+            }
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool AttachConsole(int processId);
+
+        /// <summary>Logging off or shutting down should close the flyout, not kill it.</summary>
+        private static void OnSessionEnding(object sender, SessionEndingEventArgs e)
+        {
+            ShutdownContext("SessionEnding");
+        }
+
+        /// <summary>
+        /// Tears down whatever tray this process owns. Safe from any thread and safe
+        /// to call more than once.
+        /// </summary>
+        private static void ShutdownContext(string reason)
+        {
+            TrayContext current = context;
+            context = null;
+            if (current == null)
+            {
+                return;
+            }
+            current.BeginShutdown(reason);
+            if (current.InvokeRequired)
+            {
+                // The session is ending on another thread: wait for the UI thread's own
+                // teardown instead of touching the controls from here.
+                current.WaitForShutdown(3000);
+                return;
+            }
+            current.Dispose();
         }
 
         private static bool HasFlag(string[] args, string name)
