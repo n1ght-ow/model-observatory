@@ -422,8 +422,9 @@ to [`docs/tray-evidence.md`](docs/tray-evidence.md). The tray process is the one
 applications' WebView2 instances are never included.
 
 Every number below is produced by `verify-tray.ps1` on this machine
-(2560x1600 @ 150%, one display). The figures quoted for the current build are from
-the `docs/tray-evidence.md` row for commit `4cf9dd1`; re-run the gate to reproduce them.
+(2560x1600 @ 150%, one display). The figures are the most recent row of
+[`docs/tray-evidence.md`](docs/tray-evidence.md); re-run the gate to reproduce them on
+your own machine, and compare against the commit named in that row.
 
 | Scenario | Measured | Gate threshold |
 | --- | --- | --- |
