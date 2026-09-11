@@ -57,6 +57,26 @@ function toEvent(raw: unknown): UsageEvent | null {
 }
 
 /**
+ * Strips the provider prefix the router puts on every model name.
+ *
+ * The router writes a model as `<upstream>/<model>` — `deepseek/deepseek-v4-flash`,
+ * `commandcode/z-ai/glm-5.3-flash` — while the same model reached directly is recorded
+ * by CC Switch without any prefix. Two spellings of one model on one upstream meant the
+ * Models table listed it twice and never added the two halves together: the router's
+ * 655 `deepseek/deepseek-v4.1-flash-expires-on-0910` requests sat in their own row,
+ * next to 706 of the same model from a session that called api.deepseek.com directly.
+ *
+ * Only a prefix equal to the row's own provider is removed, which is exactly the
+ * namespacing the router added and cannot be part of a real model id. Checked against
+ * the live log: every routed model carries its provider's prefix except the bare
+ * `openai` ones, and stripping merges no two different model ids.
+ */
+function bareModel(provider: string, model: string): string {
+	const prefix = provider.toLowerCase() + "/";
+	return model.toLowerCase().startsWith(prefix) ? model.slice(prefix.length) : model;
+}
+
+/**
  * Router rows, with the router's own provider name normalised.
  *
  * The router records the upstream it finally used (\`deepseek\`, \`commandcode\`, and
@@ -74,7 +94,7 @@ export function toRequestRecord(event: UsageEvent): RequestRecord {
 			: derivedTotal;
 	return {
 		at: event.at,
-		model: event.model,
+		model: bareModel(event.provider, event.model),
 		provider: providerLabel(event.provider),
 		status: event.status,
 		durationMs: event.durationMs > 0 ? event.durationMs : undefined,

@@ -125,6 +125,19 @@ Names that are not aliases are **not** folded into an "other" bucket: a bucket h
 which upstream it was, and recognition is the point. So `b-ai`, `opencode-go` and
 `openai` keep their names.
 
+The router names a model as `<upstream>/<model>` — `deepseek/deepseek-v4-flash` — while
+the same model reached directly is recorded without any prefix. Two spellings of one model
+on one upstream produced two rows that displayed identically and never added up: 655
+`deepseek/deepseek-v4.1-flash-expires-on-0910` requests sat beside 706 of the same model
+from a session that called `api.deepseek.com` directly. A prefix equal to the row's own
+provider is now stripped, which is exactly the namespacing the router added; it merges no
+two different model ids (checked against the live log).
+
+One case is deliberately **not** merged. Under Command Code the router catalog holds both
+`deepseek/deepseek-v4.1-flash` and `deepseek-v4.1-flash` as distinct model ids, and they
+display identically. Merging them would be a guess about the upstream's catalog rather
+than a fact read from it, so they stay apart.
+
 A provider that is not declared under `[model_providers]` is resolved through the root
 keys instead — `openai_base_url`, then `base_url` — because that is how Codex redirects its
 built-in providers, and the router relies on exactly that.

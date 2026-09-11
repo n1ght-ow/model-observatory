@@ -182,6 +182,29 @@ async function main() {
 		);
 	}
 
+	// The router names a model "<upstream>/<model>" while the same model reached directly
+	// carries no prefix, so the two halves used to sit in separate rows and never add up.
+	// For a row whose provider IS that upstream the prefix is always redundant, so its
+	// absence is a structural check rather than a count that drifts with traffic.
+	for (const [source, provider, prefix] of [
+		["all", "DeepSeek", "deepseek/"],
+		["router", "DeepSeek", "deepseek/"],
+		["all", "Command Code", "commandcode/"],
+		["router", "Command Code", "commandcode/"],
+	]) {
+		const body = await (
+			await fetch(`${BASE}/api/metrics?source=${source}&days=all`)
+		).json();
+		const prefixed = body.allModels.filter(
+			(m) => m.provider === provider && m.model.toLowerCase().startsWith(prefix)
+		);
+		check(
+			`${source}: no ${provider} model repeats its own provider as a prefix`,
+			prefixed.length === 0,
+			prefixed.map((m) => m.model).join(", ") || `${body.allModels.length} rows checked`
+		);
+	}
+
 	// ------------------------------------------------------------ header stays one line
 	// The switchers must not wrap below the title: a wrapped Refresh button reads as a
 	// layout bug. Rows are counted with a tolerance, because controls of different
