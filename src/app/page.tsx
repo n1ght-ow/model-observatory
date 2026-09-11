@@ -53,11 +53,13 @@ export default async function Home({ searchParams }: HomeProps) {
 							Overview
 						</h1>
 						<p className="text-sm text-muted-foreground">
-							{source === "router"
-								? "Usage, latency, and token trends from Codex Router API."
-								: source === "harness"
-									? "Usage and token trends for turns DeepSeek Harness sent upstream."
-									: "Usage, tokens, and cost trends from the native DeepSeek API."}
+							{source === "all"
+								? "Every request any reader can see, counted once. Not the sum of the three tabs — they overlap."
+								: source === "router"
+									? "Usage, latency, and token trends from Codex Router API."
+									: source === "harness"
+										? "Usage and token trends for turns DeepSeek Harness sent upstream."
+										: "Usage, tokens, and cost trends from the native DeepSeek API."}
 						</p>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">

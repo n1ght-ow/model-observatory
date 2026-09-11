@@ -29,6 +29,12 @@ namespace RouterMonitorTray
         public int dragStripHeight = 20;
 
         public int port = 3000;
+
+        /// <summary>
+        /// Global hotkey that summons the panel, e.g. "Alt+A". Empty disables it. Kept as
+        /// text rather than a key code so the file stays readable and hand-editable.
+        /// </summary>
+        public string hotkey = "Alt+A";
     }
 
     /// <summary>
@@ -121,6 +127,22 @@ namespace RouterMonitorTray
             if (settings.v < 1)
             {
                 settings.v = 1;
+            }
+            // Empty means "disabled" and is valid. Anything else has to parse, or a typo
+            // would leave the tray without the key the user thinks they configured.
+            if (settings.hotkey == null)
+            {
+                settings.hotkey = "Alt+A";
+            }
+            else if (settings.hotkey.Trim().Length > 0)
+            {
+                uint modifiers;
+                uint key;
+                if (!PanelForm.TryParseHotkey(settings.hotkey, out modifiers, out key))
+                {
+                    PanelForm.LogInit("settings: hotkey '" + settings.hotkey + "' is not a combination; using Alt+A");
+                    settings.hotkey = "Alt+A";
+                }
             }
         }
 

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { MetricSourceId } from "@/lib/metrics/types";
 
 const SOURCES: { id: MetricSourceId; label: string }[] = [
+	{ id: "all", label: "All" },
 	{ id: "deepseek", label: "DeepSeek API" },
 	{ id: "router", label: "Codex Router API" },
 	{ id: "harness", label: "DeepSeek Harness" },

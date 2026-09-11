@@ -94,6 +94,32 @@ function Invoke-Ctl([string]$cmd, [string[]]$extra) {
     return Invoke-Exe $ctrlArgs 120000
 }
 
+# Synthesises Alt+A through the same input queue Windows uses, so this exercises the
+# real WM_HOTKEY path rather than calling the handler directly.
+function Send-AltA {
+    if (-not ("HotkeySender" -as [type])) {
+        $source = @(
+            'using System;',
+            'using System.Runtime.InteropServices;',
+            'public class HotkeySender {',
+            '    [DllImport("user32.dll")]',
+            '    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);',
+            '    public static void AltA() {',
+            '        keybd_event(0x12, 0, 0, UIntPtr.Zero);',
+            '        System.Threading.Thread.Sleep(30);',
+            '        keybd_event(0x41, 0, 0, UIntPtr.Zero);',
+            '        System.Threading.Thread.Sleep(30);',
+            '        keybd_event(0x41, 0, 2, UIntPtr.Zero);',
+            '        System.Threading.Thread.Sleep(30);',
+            '        keybd_event(0x12, 0, 2, UIntPtr.Zero);',
+            '    }',
+            '}'
+        ) -join [char]10
+        Add-Type -TypeDefinition $source
+    }
+    [HotkeySender]::AltA()
+}
+
 function Read-Field([string[]]$lines, [string]$label) {
     $pattern = "^" + [regex]::Escape($label) + "\s*:\s*(.*)$"
     foreach ($line in $lines) {
@@ -249,6 +275,44 @@ Assert-That "page sees the bridge" ($bridgeVersion -eq "1") "version $bridgeVers
 # The tooltip belongs to the tray, so the page can only reach it through the bridge.
 $tooltip = Read-Field (Invoke-Ctl "status").lines "tooltip"
 Assert-That "tooltip reports the current route" ($tooltip -like "Router Monitor*") "$tooltip"
+
+
+# ------------------------------------------------------------- 2c. global hotkey
+Say ""
+Say "--- global hotkey ---"
+$hotkeyLines = (Invoke-Ctl "hotkey").lines
+foreach ($line in $hotkeyLines) { Say ("  " + $line) }
+$hotkeySpec = Read-Field $hotkeyLines "hotkey"
+$hotkeyState = Read-Field $hotkeyLines "hotkey state"
+Assert-That "the hotkey is configured" (-not [string]::IsNullOrEmpty($hotkeySpec)) "$hotkeySpec"
+# "disabled" and "already taken" are both legitimate states, so this asserts that the
+# tray knows which state it is in, not that the key works - a key that silently failed
+# to register looks exactly like one that works.
+Assert-That "the hotkey reports its state" ($hotkeyState -match "registered|disabled|taken|invalid|waiting") "$hotkeyState"
+
+if ($hotkeyState -match "registered") {
+    # Press it for real, and prove the transition rather than just the end state: the
+    # panel is hidden first and that has to be confirmed, or "yes -> yes" would pass
+    # even if the key did nothing at all.
+    $visibleBefore = Read-Field (Invoke-Ctl "ping").lines "panel visible"
+    if ($visibleBefore -eq "yes") {
+        Invoke-Ctl "hide" | Out-Null
+        Start-Sleep -Milliseconds 1500
+        $visibleBefore = Read-Field (Invoke-Ctl "ping").lines "panel visible"
+    }
+    Assert-That "the panel starts hidden" ($visibleBefore -eq "no") "$visibleBefore"
+    Send-AltA
+    Start-Sleep -Milliseconds 2500
+    $visibleAfter = Read-Field (Invoke-Ctl "ping").lines "panel visible"
+    Assert-That "pressing it summons the panel" ($visibleAfter -eq "yes") "$visibleBefore -> $visibleAfter"
+
+    # And again, to confirm it dismisses what it summoned. Without this the key could be
+    # a one-way "show" and the test would not notice.
+    Send-AltA
+    Start-Sleep -Milliseconds 2000
+    $visibleAgain = Read-Field (Invoke-Ctl "ping").lines "panel visible"
+    Assert-That "pressing it again dismisses the panel" ($visibleAgain -eq "no") "$visibleAfter -> $visibleAgain"
+}
 
 # ---------------------------------------------------------------- 3. screenshots
 Say ""

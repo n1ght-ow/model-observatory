@@ -30,9 +30,14 @@ namespace RouterMonitorTray
         private ToolStripMenuItem itemPin;
         private ToolStripMenuItem itemTopMost;
         private ToolStripMenuItem itemSize;
+        private ToolStripMenuItem itemHotkey;
         private ToolStripMenuItem itemServer;
         private readonly Timer serverTimer;
         private bool? lastServerServing;
+        private string pendingHotkeyWarning;
+
+        /// <summary>The combination the menu restores when the hotkey is re-enabled.</summary>
+        private const string DefaultHotkey = "Alt+A";
         private readonly Icon trayIcon;
         private bool disposed;
         private bool autoStart;
@@ -53,6 +58,12 @@ namespace RouterMonitorTray
             // has opened the panel.
             panel.EnsureHandle();
             panel.StayOpen = SettingsStore.Current.stayOpen;
+            // The handle exists by now, so the hotkey is live from startup - the panel
+            // does not have to be opened once first for the key to work.
+            if (!panel.ApplyHotkey(SettingsStore.Current.hotkey))
+            {
+                pendingHotkeyWarning = panel.HotkeyStatus;
+            }
             menu = BuildMenu();
             // The page can pin itself; the menu and the settings file have to agree.
             panel.PinnedChanged += OnPinnedChanged;
@@ -80,6 +91,14 @@ namespace RouterMonitorTray
 
             autoStart = HasAutoStart();
             itemAutoStart.Checked = autoStart;
+
+            // The hotkey was applied before the icon existed, so a failure could not be
+            // shown then. Say it now rather than letting a dead key look like a live one.
+            if (!string.IsNullOrEmpty(pendingHotkeyWarning))
+            {
+                Notify("全局快捷键未生效", pendingHotkeyWarning, ToolTipIcon.Warning);
+                pendingHotkeyWarning = null;
+            }
 
             control = new ControlServer(ControlProtocol.PipeName);
             RegisterControlHandlers();
@@ -173,6 +192,26 @@ namespace RouterMonitorTray
             ToolStripMenuItem reset = new ToolStripMenuItem("重置窗口位置");
             reset.Click += delegate { panel.ForgetPosition(); };
             strip.Items.Add(reset);
+
+            // The global hotkey. Ticked only when it is actually registered, because a
+            // tick that does not work is worse than no tick at all.
+            ToolStripMenuItem hotkey = new ToolStripMenuItem("全局快捷键 (" + settings.hotkey + ")");
+            hotkey.CheckOnClick = true;
+            hotkey.Checked = panel.HotkeyStatus.IndexOf("registered", StringComparison.OrdinalIgnoreCase) >= 0;
+            hotkey.Click += delegate
+            {
+                TraySettings live = SettingsStore.Current;
+                live.hotkey = hotkey.Checked ? DefaultHotkey : "";
+                bool ok = panel.ApplyHotkey(live.hotkey);
+                SettingsStore.Save();
+                hotkey.Checked = ok && live.hotkey.Length > 0;
+                if (!ok && live.hotkey.Length > 0)
+                {
+                    Notify("快捷键未能注册", panel.HotkeyStatus, ToolTipIcon.Warning);
+                }
+            };
+            strip.Items.Add(hotkey);
+            itemHotkey = hotkey;
 
             strip.Items.Add(new ToolStripSeparator());
 
@@ -359,6 +398,36 @@ namespace RouterMonitorTray
         }
 
         /// <summary>
+        /// Reads or sets the global hotkey. Setting it is the same code path the menu
+        /// uses, so a script and a click cannot drift apart.
+        /// </summary>
+        private ControlResponse HandleHotkey(ControlRequest request)
+        {
+            string value = ArgString(request, "value", null);
+            if (value == null)
+            {
+                return Complete(OnUi(delegate { return DescribeHotkey(); }), 15000, request.id);
+            }
+            return Complete(OnUi(delegate
+            {
+                ApplySetting("hotkey", value);
+                return DescribeHotkey();
+            }), 15000, request.id);
+        }
+
+        private Dictionary<string, object> DescribeHotkey()
+        {
+            List<string> lines = new List<string>();
+            Dictionary<string, object> fields = new Dictionary<string, object>();
+            AddLine(lines, fields, "hotkey", panel.HotkeySpec.Length == 0 ? "(disabled)" : panel.HotkeySpec);
+            AddLine(lines, fields, "hotkey state", panel.HotkeyStatus);
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["lines"] = lines;
+            result["fields"] = fields;
+            return result;
+        }
+
+        /// <summary>
         /// Reports, or sets, the one line the notification-area tooltip carries.
         /// The tooltip belongs to the tray, so the page can only reach it through here.
         /// </summary>
@@ -381,6 +450,7 @@ namespace RouterMonitorTray
             List<string> lines = new List<string>();
             Dictionary<string, object> fields = new Dictionary<string, object>();
             AddLine(lines, fields, "tooltip", notifyIcon == null ? "(none)" : notifyIcon.Text);
+            AddLine(lines, fields, "hotkey", panel.HotkeyStatus);
             Dictionary<string, object> result = new Dictionary<string, object>();
             result["lines"] = lines;
             result["fields"] = fields;
@@ -549,6 +619,21 @@ namespace RouterMonitorTray
             {
                 panel.ApplyDragStripHeight((int)Math.Round(ParseDouble(value, panel.DragStripHeightValue)));
             }
+            else if (string.Equals(key, "hotkey", StringComparison.OrdinalIgnoreCase))
+            {
+                settings.hotkey = value.Trim();
+                if (!panel.ApplyHotkey(settings.hotkey))
+                {
+                    // Reported rather than thrown: the combination may simply be owned by
+                    // another program, which is a fact about the machine, not a bug.
+                    Notify("快捷键未能注册", panel.HotkeyStatus, ToolTipIcon.Warning);
+                }
+                SettingsStore.Save();
+                if (itemHotkey != null)
+                {
+                    itemHotkey.Checked = panel.HotkeyStatus.IndexOf("registered", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+            }
             else
             {
                 throw new ArgumentException("'" + key + "' is not a live setting");
@@ -569,6 +654,8 @@ namespace RouterMonitorTray
             AddLine(lines, fields, "hasPosition", settings.hasPosition ? "true" : "false");
             AddLine(lines, fields, "position", settings.hasPosition ? settings.windowX + "," + settings.windowY : "(docked to the tray)");
             AddLine(lines, fields, "port", settings.port.ToString(CultureInfo.InvariantCulture));
+            AddLine(lines, fields, "hotkey", panel.HotkeySpec.Length == 0 ? "(disabled)" : panel.HotkeySpec);
+            AddLine(lines, fields, "hotkey state", panel.HotkeyStatus);
             Dictionary<string, object> result = new Dictionary<string, object>();
             result["lines"] = lines;
             result["fields"] = fields;
@@ -707,6 +794,7 @@ namespace RouterMonitorTray
             control.Register("shot", HandleShot);
             control.Register("eval", HandleEval);
             control.Register("cycle", HandleCycle);
+            control.Register("hotkey", HandleHotkey);
             control.Register("status", HandleStatus);
             control.Register("config", HandleConfig);
             control.Register("quit", HandleQuit);

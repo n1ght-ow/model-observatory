@@ -1,6 +1,4 @@
 import { SourceStatusCard } from "@/components/metrics/source-status-card";
-import { CommandCodeLimitsCard } from "@/components/command-code-usage";
-import { DashboardActivity } from "@/components/dashboard-activity";
 import { MetricStatGrid } from "@/components/metrics/metric-stat-grid";
 import { TopModels } from "@/components/top-models";
 import { ModelDistribution } from "@/components/model-distribution";
@@ -85,22 +83,22 @@ export function Dashboard({
 				<CardHeader className="border-b">
 					<CardTitle className="text-base">Recent requests</CardTitle>
 					<CardDescription>
-						{source === "router"
-							? "Latest calls through Codex Router API."
-							: source === "harness"
-								? "Latest turns DeepSeek Harness sent upstream."
-								: "Latest calls through the native DeepSeek API."}
+						{source === "all"
+							? "Newest calls across every reader."
+							: source === "router"
+								? "Latest calls through Codex Router API."
+								: source === "harness"
+									? "Latest turns DeepSeek Harness sent upstream."
+									: "Latest calls through the native DeepSeek API."}
 					</CardDescription>
 				</CardHeader>
 				<CardContent className="px-0">
 					<RequestsTable compact limit={12} rows={snapshot.recent} />
 				</CardContent>
 			</DashboardCard>
-			<CommandCodeLimitsCard report={snapshot.commandCode} />
 			<ModelDistribution snapshot={snapshot} />
 			<SourceStatusCard snapshot={snapshot} source={source} />
 			<TopModels snapshot={snapshot} />
-			<DashboardActivity snapshot={snapshot} source={source} />
 			<UsageInsights snapshot={snapshot} />
 		</div>
 	);

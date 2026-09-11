@@ -365,6 +365,14 @@ namespace RouterMonitorTray
 
         protected override void WndProc(ref Message m)
         {
+            // Checked before anything else: the hotkey message carries no coordinates or
+            // state that the handlers below care about, and it must not fall through to
+            // the default handling.
+            if (HandleHotkeyMessage(ref m))
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
             if (m.Msg == WM_NCHITTEST)
             {
                 m.Result = (IntPtr)HTCLIENT;
@@ -405,6 +413,13 @@ namespace RouterMonitorTray
         {
             base.OnHandleCreated(e);
             ApplySystemFrame();
+            // A hotkey is registered against a window handle, and the handle may be
+            // recreated (a DPI change or a theme change does it), which silently drops
+            // the registration. Re-applying here keeps the key alive across that.
+            if (!string.IsNullOrEmpty(hotkeySpec))
+            {
+                ApplyHotkey(hotkeySpec);
+            }
         }
 
         /// <summary>
@@ -592,6 +607,7 @@ namespace RouterMonitorTray
         {
             if (disposing)
             {
+                UnregisterCurrentHotkey();
                 try
                 {
                     if (webViewReady && controller != null)

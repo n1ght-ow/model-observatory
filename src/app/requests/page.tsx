@@ -59,21 +59,28 @@ export default async function RequestsPage({ searchParams }: RequestsPageProps) 
 	const { totals, recent, allModels } = snapshot;
 	const sourceLabel = snapshot.sourceLabel;
 	const sourceDescription =
-		source === "router"
-			? "Live request log from Codex Router API (127.0.0.1:4202)."
-			: source === "harness"
-				? "Live request log from DeepSeek Harness session logs (~/.dsh/sessions)."
-				: "Live request log from the native DeepSeek API (api.deepseek.com).";
+		source === "all"
+			? "Every request any reader can see, counted once. Not the sum of the three tabs — they overlap."
+			: source === "router"
+				? "Live request log from Codex Router API (127.0.0.1:4202)."
+				: source === "harness"
+					? "Live request log from DeepSeek Harness session logs (~/.dsh/sessions)."
+					: "Live request log from the native DeepSeek API (api.deepseek.com).";
 	// The harness meters the native DeepSeek upstream in CNY; Command Code turns
 	// there are billed as credits, so only the priced part is shown.
+	// "all" reports no cost on purpose: DeepSeek's CNY list prices only DeepSeek
+	// models, CC Switch's USD is near zero, and the router logs none at all, so a
+	// combined figure would not mean anything.
 	const costSummary =
-		source === "harness"
-			? totals.totalCostCny
-				? ` · ¥${totals.totalCostCny.toFixed(2)} est.`
-				: ""
-			: totals.totalCostUsd
-				? ` · $${totals.totalCostUsd.toFixed(2)}`
-				: "";
+		source === "all"
+			? ""
+			: source === "harness"
+				? totals.totalCostCny
+					? ` · ¥${totals.totalCostCny.toFixed(2)} est.`
+					: ""
+				: totals.totalCostUsd
+					? ` · $${totals.totalCostUsd.toFixed(2)}`
+					: "";
 
 	// A silent source looks like a broken page, so say when its newest entry is
 	// old rather than letting the table quietly end hours in the past.

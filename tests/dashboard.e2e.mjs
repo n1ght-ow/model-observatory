@@ -52,6 +52,64 @@ async function main() {
 		check(`${route} renders main`, (await page.locator("main").count()) > 0);
 	}
 
+	// ------------------------------------------------------------ removed panels
+	// These were removed by request; asserting their absence stops them drifting back.
+	await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+	check(
+		"overview has no Command Code limits card",
+		(await page.getByText("Command Code limits", { exact: false }).count()) === 0
+	);
+	check(
+		"overview has no Activity card",
+		(await page.getByText("Activity", { exact: true }).count()) === 0
+	);
+	await page.goto(`${BASE}/deepseek`, { waitUntil: "networkidle" });
+	check(
+		"deepseek has no scope banner",
+		(await page.getByText("every native api.deepseek.com request", { exact: false }).count()) === 0
+	);
+
+	// ------------------------------------------------------------------ the All tab
+	await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+	check(
+		"source switcher offers All",
+		(await page.locator('a[href*="source=all"]').count()) > 0
+	);
+
+	for (const route of ["/", "/requests", "/models"]) {
+		const response = await page.goto(`${BASE}${route}?source=all`, {
+			waitUntil: "domcontentloaded",
+		});
+		check(`${route}?source=all responds 200`, response?.status() === 200, `status ${response?.status()}`);
+		await page.waitForSelector("main", { timeout: 15000 });
+		check(`${route}?source=all renders main`, (await page.locator("main").count()) > 0);
+	}
+
+	// The whole point of All is that it is a union, not a sum: the tabs overlap, so
+	// "all equals the sum" would mean the de-duplication silently stopped working.
+	const perTab = {};
+	for (const source of ["deepseek", "router", "harness", "all"]) {
+		const body = await (await fetch(`${BASE}/api/metrics?source=${source}&days=7`)).json();
+		perTab[source] = body.window.requests;
+	}
+	const sum = perTab.deepseek + perTab.router + perTab.harness;
+	const max = Math.max(perTab.deepseek, perTab.router, perTab.harness);
+	check(
+		"all is smaller than the sum of the tabs",
+		perTab.all < sum,
+		`all=${perTab.all} sum=${sum}`
+	);
+	check(
+		"all is larger than any single tab",
+		perTab.all > max,
+		`all=${perTab.all} max=${max}`
+	);
+	check(
+		"all reports no combined cost",
+		(await (await fetch(`${BASE}/api/metrics?source=all`)).json()).window.totalCostCny === undefined,
+		"cost must stay absent: it is not comparable across upstreams"
+	);
+
 	// ------------------------------------------------------- tray-only controls
 	// The bridge is injected by the tray, so in a browser these must not exist.
 	await page.goto(`${BASE}/`, { waitUntil: "networkidle" });

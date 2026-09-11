@@ -1,17 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { queryRows } from "@/lib/cc-switch/client";
 import {
 	getCodexSessionIndex,
 	type CodexRow,
 } from "@/lib/codex/session-upstream";
 import {
+	type CodexRequestRow,
+	readCodexRows,
+} from "@/lib/metrics/sources/codex-rows";
+import {
 	DSH_NATIVE_DEEPSEEK_PROVIDER,
 	readDshUsageEvents,
 	toDshRequestRecords,
 } from "@/lib/dsh/session-usage";
-import { estimateCnyCost } from "@/lib/deepseek/cny-pricing";
 import {
 	aggregateRequests,
 	buildDaily,
@@ -49,24 +51,6 @@ const DEEPSEEK_CAPABILITIES: MetricCapabilities = {
 	balance: true,
 	provider: false,
 };
-
-type CcSwitchRow = {
-	model?: unknown;
-	input_tokens?: unknown;
-	output_tokens?: unknown;
-	cache_read_tokens?: unknown;
-	total_cost_usd?: unknown;
-	latency_ms?: unknown;
-	first_token_ms?: unknown;
-	duration_ms?: unknown;
-	status_code?: unknown;
-	data_source?: unknown;
-	session_id?: unknown;
-	created_at?: unknown;
-};
-
-/** A record plus the Codex session it came from, used for upstream filtering. */
-export type DeepSeekRow = RequestRecord & { sessionId: string };
 
 /**
  * Label for turns DeepSeek Harness sent to api.deepseek.com. They share the
@@ -112,13 +96,6 @@ function upstreamDetail(
 	return `${count(excluded)} of ${count(total)} Codex DeepSeek-model requests excluded: ${parts.join(", ")}.${harnessNote}`;
 }
 
-type AccountCache = {
-	value: DeepSeekAccount;
-	expiresAt: number;
-};
-
-let accountCache: AccountCache | null = null;
-
 function toNumber(value: unknown): number {
 	if (typeof value === "number" && Number.isFinite(value)) {
 		return value;
@@ -135,9 +112,12 @@ function toNumber(value: unknown): number {
 	return 0;
 }
 
-function toStringValue(value: unknown, fallback = ""): string {
-	return typeof value === "string" ? value : fallback;
-}
+type AccountCache = {
+	value: DeepSeekAccount;
+	expiresAt: number;
+};
+
+let accountCache: AccountCache | null = null;
 
 function parseBalances(raw: unknown): DeepSeekBalance[] {
 	if (!Array.isArray(raw)) {
@@ -264,61 +244,8 @@ async function getDeepSeekAccount(): Promise<DeepSeekAccount> {
 	return value;
 }
 
-function readDeepSeekRows(): DeepSeekRow[] {
-	const rows = queryRows<CcSwitchRow>(
-		`SELECT
-			model,
-			input_tokens,
-			output_tokens,
-			cache_read_tokens,
-			total_cost_usd,
-			latency_ms,
-			first_token_ms,
-			duration_ms,
-			status_code,
-			data_source,
-			session_id,
-			created_at
-		FROM proxy_request_logs
-		WHERE app_type = 'codex' AND lower(model) LIKE '%deepseek%'
-		ORDER BY created_at DESC`
-	);
-	return rows.map((row) => {
-		const createdAt = toNumber(row.created_at);
-		const inputTokens = toNumber(row.input_tokens);
-		const outputTokens = toNumber(row.output_tokens);
-		const latencyMs = toNumber(row.latency_ms);
-		const durationMs = toNumber(row.duration_ms);
-		const firstTokenMs = toNumber(row.first_token_ms);
-		const cacheReadTokens = toNumber(row.cache_read_tokens);
-		const model = toStringValue(row.model, "unknown");
-		const at = new Date(createdAt * 1000).toISOString();
-		return {
-			at,
-			model,
-			provider: "DeepSeek API",
-			sessionId: toStringValue(row.session_id, "unknown"),
-			status: toNumber(row.status_code),
-			durationMs:
-				latencyMs > 0 ? latencyMs : durationMs > 0 ? durationMs : undefined,
-			firstTokenMs: firstTokenMs > 0 ? firstTokenMs : undefined,
-			inputTokens,
-			outputTokens,
-			cacheReadTokens,
-			totalTokens: inputTokens + outputTokens,
-			costUsd: toNumber(row.total_cost_usd),
-			// CC Switch prices in USD; the account is billed in CNY, so the
-			// official DeepSeek price list is applied to the token counts.
-			costCny: estimateCnyCost({
-				at,
-				cacheReadTokens,
-				inputTokens,
-				model,
-				outputTokens,
-			}),
-			dataSource: toStringValue(row.data_source, "unknown"),
-		};
-	});
+function readDeepSeekRows(): CodexRequestRow[] {
+	return readCodexRows({ deepseekOnly: true, provider: "DeepSeek API" });
 }
 
 async function getDeepSeekSnapshot(

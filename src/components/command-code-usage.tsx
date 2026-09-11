@@ -1,20 +1,7 @@
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import {
-	CardContent,
-	CardDescription,
-	CardFooter,
-	CardHeader,
-	CardTitle,
-} from "@/components/ui/card";
-import { DashboardCard } from "@/components/dashboard-card";
 import { formatFullCurrency } from "@/components/formater";
-import { formatDateTime, formatShortDateTime } from "@/lib/metrics/time";
-import type {
-	CommandCodeReport,
-	CommandCodeWindow,
-} from "@/lib/commandcode/types";
-import { RefreshCwIcon } from "lucide-react";
+import { formatShortDateTime } from "@/lib/metrics/time";
+import type { CommandCodeWindow } from "@/lib/commandcode/types";
 import { cn } from "@/lib/utils";
 
 /** Progress tones: green under 60%, amber from 60%, red from 85%. */
@@ -32,10 +19,7 @@ function limitTone(usedPct: number): { bar: string; text: string } {
 }
 
 /** `resets in 2h 15m · Sep 12, 04:00` — relative for near windows. */
-export function formatResetLabel(
-	resetAt: string | null,
-	now = Date.now()
-): string {
+function formatResetLabel(resetAt: string | null, now = Date.now()): string {
 	if (!resetAt) {
 		return "no reset scheduled";
 	}
@@ -107,87 +91,5 @@ export function LimitProgress({
 				</span>
 			</div>
 		</div>
-	);
-}
-
-/**
- * Compact paced-limits card for the overview and DeepSeek pages. Renders
- * nothing when no Command Code credential is configured, so unrelated pages
- * stay unchanged for users without an account.
- */
-export function CommandCodeLimitsCard({
-	report,
-	className,
-	now,
-	hideWhenUnconfigured = true,
-}: {
-	report?: CommandCodeReport | null;
-	className?: string;
-	now?: number;
-	hideWhenUnconfigured?: boolean;
-}) {
-	if (!report || (!report.configured && hideWhenUnconfigured)) {
-		return null;
-	}
-
-	const { usage, limits } = report;
-	return (
-		<DashboardCard className={cn("gap-0 md:col-span-2", className)}>
-			<CardHeader className="border-b">
-				<div className="flex flex-wrap items-center gap-2">
-					<CardTitle className="text-base">Command Code limits</CardTitle>
-					{report.online ? (
-						<Badge variant="secondary">live</Badge>
-					) : (
-						<Badge variant="destructive">unreachable</Badge>
-					)}
-					{limits.limited === false ? (
-						<Badge variant="outline">unlimited</Badge>
-					) : null}
-				</div>
-				<CardDescription>
-					Rolling 5-hour, weekly and monthly credit windows from
-					api.commandcode.ai.
-				</CardDescription>
-			</CardHeader>
-			<CardContent className="flex flex-col gap-4 px-6 py-4">
-				{report.windows.length > 0 ? (
-					report.windows.map((windowLimit) => (
-						<LimitProgress
-							key={windowLimit.id}
-							now={now}
-							window={windowLimit}
-						/>
-					))
-				) : (
-					<p className="text-sm text-muted-foreground">
-						{report.error ??
-							"No Command Code windows were reported by the billing API."}
-					</p>
-				)}
-				{usage ? (
-					<p className="text-xs text-muted-foreground tabular-nums">
-						{usage.totalCount.toLocaleString("en-US")} requests ·{" "}
-						{usage.successRate.toFixed(1)}% success ·{" "}
-						{formatFullCurrency(usage.totalCost)} spent all-time
-					</p>
-				) : null}
-			</CardContent>
-			<CardFooter className="justify-between text-xs text-muted-foreground">
-				<span className="tabular-nums">
-					Checked {formatDateTime(report.fetchedAt)}
-					{report.latencyMs > 0 ? ` · ${report.latencyMs} ms` : ""}
-				</span>
-				<Button
-					nativeButton={false}
-					render={<a href="/api/command-code" />}
-					size="sm"
-					variant="ghost"
-				>
-					<RefreshCwIcon data-icon="inline-start" />
-					JSON
-				</Button>
-			</CardFooter>
-		</DashboardCard>
 	);
 }

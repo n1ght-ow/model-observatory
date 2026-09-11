@@ -24,36 +24,46 @@ export function SourceStatusCard({
 	source: MetricSourceId;
 }) {
 	const health = snapshot.health;
+	const isAll = source === "all";
 	const isRouter = source === "router";
 	const isHarness = source === "harness";
 	const online = health?.ok === true;
-	const statusLabel = isRouter
-		? online
-			? "online"
-			: "unreachable"
-		: isHarness
-			? snapshot.status === "live"
-				? "reading logs"
-				: "no traffic"
-			: "session sync";
+	const statusLabel = isAll
+		? snapshot.status === "live"
+			? "reading every source"
+			: "no traffic"
+		: isRouter
+			? online
+				? "online"
+				: "unreachable"
+			: isHarness
+				? snapshot.status === "live"
+					? "reading logs"
+					: "no traffic"
+				: "session sync";
 	const statusVariant =
 		isRouter && !online
 			? "destructive"
 			: isHarness && snapshot.status !== "live"
 				? "outline"
 				: "secondary";
-	const title = isRouter
-		? "Router health"
-		: isHarness
-			? "DeepSeek Harness"
-			: "DeepSeek API";
-	const description = isRouter
-		? health?.ok
-			? health.detail
-			: "Codex Router is not responding on 127.0.0.1:4202."
-		: isHarness
-			? "Turns the harness sent upstream, aggregated from its own session logs."
-			: "Native DeepSeek API requests, synced from the active Codex profile.";
+	const title = isAll
+		? "Coverage"
+		: isRouter
+			? "Router health"
+			: isHarness
+				? "DeepSeek Harness"
+				: "DeepSeek API";
+	const description = isAll
+		? (snapshot.allScope?.detail ??
+			"Every request any reader can see, counted once.")
+		: isRouter
+			? health?.ok
+				? health.detail
+				: "Codex Router is not responding on 127.0.0.1:4202."
+			: isHarness
+				? "Turns the harness sent upstream, aggregated from its own session logs."
+				: "Native DeepSeek API requests, synced from the active Codex profile.";
 	const jsonHref = `/api/metrics?source=${source}`;
 	const topProviders = snapshot.windowProviders.slice(0, 5);
 	return (

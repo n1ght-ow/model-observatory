@@ -1,5 +1,6 @@
 import { getCurrentCodexProfile } from "@/lib/cc-switch/profile";
 import { getCommandCodeReport } from "@/lib/commandcode/client";
+import { AllSource } from "@/lib/metrics/sources/all-source";
 import { DeepSeekSource } from "@/lib/metrics/sources/deepseek-source";
 import { HarnessSource } from "@/lib/metrics/sources/harness-source";
 import { RouterSource } from "@/lib/metrics/sources/router-source";
@@ -18,6 +19,7 @@ export interface MetricSource {
 }
 
 const sources: Record<MetricSourceId, MetricSource> = {
+	all: new AllSource(),
 	deepseek: new DeepSeekSource(),
 	router: new RouterSource(),
 	harness: new HarnessSource(),
@@ -27,6 +29,10 @@ export function getMetricSource(id: MetricSourceId): MetricSource {
 	return sources[id];
 }
 
+/**
+ * The three real readers. "all" is deliberately absent: \`/api/sources\` reports where
+ * data comes from, and "all" is a view over those readers rather than a fourth source.
+ */
 export function listMetricSources(): MetricSource[] {
 	return [sources.deepseek, sources.router, sources.harness];
 }
@@ -43,7 +49,10 @@ export async function resolveActiveSource(): Promise<MetricSourceId> {
 
 /** Parses a `?source=` value, or null when it names no known source. */
 export function parseMetricSource(value: unknown): MetricSourceId | null {
-	return value === "deepseek" || value === "router" || value === "harness"
+	return value === "all" ||
+		value === "deepseek" ||
+		value === "router" ||
+		value === "harness"
 		? value
 		: null;
 }

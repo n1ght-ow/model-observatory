@@ -1,6 +1,6 @@
 import type { CommandCodeReport } from "@/lib/commandcode/types";
 
-export type MetricSourceId = "deepseek" | "router" | "harness";
+export type MetricSourceId = "all" | "deepseek" | "router" | "harness";
 
 export type SourceStatus = "live" | "syncing" | "unavailable" | "error";
 
@@ -175,6 +175,43 @@ export type MetricsSnapshot = {
 	commandCode?: CommandCodeReport | null;
 	/** Which upstreams a source kept, when it filters by upstream. */
 	upstream?: UpstreamFilterInfo | null;
+	/**
+	 * How the "all" view was assembled, so the page can explain why its totals
+	 * differ from the sum of the three tabs. Absent for every other source.
+	 */
+	allScope?: AllScopeInfo | null;
+};
+
+/**
+ * The "all" tab is a union of three readers, not a sum of three tabs.
+ *
+ * Each request is owned by exactly one reader — the router log owns everything that
+ * went through the router, the harness owns every DSH turn, and CC Switch contributes
+ * only the Codex sessions that did *not* go through the router. Adding the three tabs
+ * together would count roughly a thousand rows twice, because router traffic and
+ * harness turns are each visible to two readers.
+ */
+export type AllScopeInfo = {
+	/** Requests contributed by each reader. */
+	sources: {
+		/** Rows from the Codex Router's own event log. */
+		router: number;
+		/** Turns read from the DeepSeek Harness session logs. */
+		harness: number;
+		/** Codex rows CC Switch recorded that the router never saw. */
+		codexDirect: number;
+	};
+	/**
+	 * Codex rows dropped because the router log already contains them.
+	 *
+	 * This is the only genuine overlap between readers. Harness turns are *not*
+	 * duplicated here — they only look that way when the three tabs are added up,
+	 * because /deepseek chooses to merge the DeepSeek-hosted ones into itself.
+	 */
+	dedupedViaRouter: number;
+	/** Rows whose Codex rollout is gone, so their route cannot be known. */
+	unknownUpstream: number;
+	detail: string;
 };
 
 export type UpstreamFilterInfo = {

@@ -48,7 +48,10 @@ first, and `src/lib/codex/session-upstream.ts` decides which is which:
    row match wins, and a session with no exact match falls back to the provider
    the router used for the same models around the session's own time span.
 
-The page shows a banner with the split, so the exclusion is auditable. Of the
+The split is auditable from `GET /api/metrics?source=deepseek`, whose `upstream`
+field carries the same breakdown the page used to draw. (There was a banner on the page;
+it was removed because its numbers were computed over all time and did not follow the
+1d/7d/30d range switcher, so on a 1-day view it contradicted the page it sat on.) Of the
 current 2,835 DeepSeek-model rows:
 
 | Upstream | Rows | Counted |
@@ -145,7 +148,54 @@ Because it is session data it also becomes visible immediately — the log
 updates while a turn is still running.
 
 All dashboard data refreshes every 5 seconds. The DeepSeek balance endpoint is
-cached for 30 seconds to avoid calling the official API too frequently.
+cached for 30 seconds to avoid calling the official API too frequently. The DeepSeek tab
+is the slowest (`/api/metrics?source=deepseek` takes 1.8–2.9 s) because it classifies
+every Codex session by reading its rollout file; All pays that same cost plus two cheap
+reads, so it is the slowest view.
+
+### The All tab
+
+`All` answers "what has this machine actually been doing", which no per-upstream tab can:
+each of them is scoped to one data path and therefore cannot show the others.
+
+**It is a union, not a sum.** The three tabs overlap, so adding them together counts
+roughly a thousand rows twice:
+
+- every harness turn sent to `api.deepseek.com` appears on both `/harness` and
+  `/deepseek`, because the DeepSeek page deliberately merges the harness's native turns
+  into itself;
+- everything the Codex Router forwarded appears on both `/router` and `/deepseek`.
+
+So All splits ownership **by reader**, which makes the three parts disjoint:
+
+| Owner | Holds | Why |
+| --- | --- | --- |
+| router log | everything through the router | it saw the request and knows the final upstream |
+| harness log | every DSH turn | DSH talks to upstreams directly, so nothing else sees it |
+| CC Switch | Codex rows the router never saw | includes the non-DeepSeek models no tab can show |
+
+The overlap is real and measurable: with 7 days of data the tabs sum to ~7,500 while All
+reports ~6,500, and `npm run test:e2e` asserts `max(tabs) < all < sum(tabs)` so a
+regression in the de-duplication fails the build rather than quietly inflating a number.
+
+**What it adds.** CC Switch holds Codex rows whose model is not a DeepSeek one —
+`glm-5.3-flash`, `gpt-5.6-luna`, `qwen3.8-flash` and friends. Each per-upstream tab
+filters them out, so they were invisible; All shows them.
+
+**What it does not report, and why:**
+
+- **cost** — DeepSeek's CNY list prices only cover DeepSeek models, the CC Switch USD
+  figure is near zero (the account is billed in CNY), and the router logs no cost at all.
+  Adding those gives a number without a meaning, so the field stays absent.
+- **first token** — only the router log records it.
+- **latency** — reported, but it averages three different measurements (CC Switch's
+  `latency_ms`, the router's `durationMs`, DSH's whole-turn duration), so it is an average
+  over rows that reported *something* rather than a comparable figure.
+
+Every row whose Codex rollout is gone cannot have its route determined at all. Those are
+counted and labelled rather than guessed at or dropped — currently three rows.
+
+The Coverage card on Overview states the split, so the number is auditable.
 
 ### JSON API
 
@@ -391,6 +441,7 @@ lives in `%LOCALAPPDATA%\RouterMonitorTray\settings.json`:
 | `topMost` | `true` | always-on-top (窗口置顶) |
 | `hasPosition`, `windowX`, `windowY` | unset | where the panel was last dragged to |
 | `port` | `3000` | the port the local dashboard answers on |
+| `hotkey` | `Alt+A` | global hotkey that summons the panel; empty disables it |
 
 The tray menu changes the first four live — **固定面板**, **窗口置顶**, **面板大小**
 (70% / 85% / 100%) and **重置窗口位置** — and each writes the file immediately.
@@ -671,12 +722,13 @@ Tray behaviour:
 - **立即刷新** reloads the page in place.
 - **固定面板**, **窗口置顶**, **面板大小** and **重置窗口位置** are preferences:
   they are remembered in `settings.json` and take effect immediately.
+- **全局快捷键 (Alt+A)** summons the panel from any application; unticking it disables the key.
 - **开机自动启动** toggles the Startup-folder shortcut.
 - When `http://127.0.0.1:3000` is not answering, the tray starts the hidden host
   itself by running `scripts\start-dashboard.ps1`.
 
-The data-source switcher (DeepSeek API / Codex Router API / DeepSeek Harness) is no
-longer in the tray menu: the real page carries it in its header, and duplicating it
+The data-source switcher (All / DeepSeek API / Codex Router API / DeepSeek Harness) is
+no longer in the tray menu: the real page carries it in its header, and duplicating it
 would mean two places to keep in sync.
 
 `start-dashboard.ps1` ends in `$server.WaitForExit()`, so it never returns. The
@@ -712,6 +764,7 @@ discoverable without reading the source.
 | `shot` | `args.path` - save the flyout as it appears on screen; `args.page` sends the panel to a dashboard route first |
 | `eval` | `args.script` or `args.file` - run script inside the live flyout |
 | `cycle` | `args.path`, `args.page`, `args.holdMs` - the suspend/reopen measurement |
+| `hotkey` | read the global hotkey and whether it registered, or set it with `args.value` |
 | `config` | read the settings, or change one live |
 | `quit` | tear down the way the menu's Quit does |
 
@@ -774,6 +827,46 @@ Quitting, logging off and shutting down all teardown the same way - the icon
 goes, the WebView is suspended and disposed, and the exit is recorded in
 `logs/tray-init.log` as `shutdown: <reason>`. Killing the process was what used
 to leave `msedgewebview2` children holding the profile lock.
+
+### The global hotkey
+
+**Alt+A** summons the panel from anywhere, and hides it again if it is already the
+foreground window — one key that shows and dismisses, which is what a summon key is
+expected to do.
+
+Why the tray owns this rather than the page: the key has to work while another
+application is in front *and* while the flyout is hidden, and a hidden flyout has its
+WebView suspended, so the page is not running at all. The tray is the only part of this
+that is always there.
+
+Registration happens in `OnHandleCreated`, and the panel gets its handle at startup
+(`TrayContext` calls `EnsureHandle`), so the key works before the panel has ever been
+opened. The handle can be recreated — a DPI or theme change does it — which silently
+drops a registration, so it is re-applied there too.
+
+| | |
+| --- | --- |
+| Default | `Alt+A` |
+| Change it | `--ctl hotkey --arg value=Ctrl+Shift+K` |
+| Disable it | `--ctl hotkey --arg value=` , or untick **全局快捷键** in the tray menu |
+| Check it | `--ctl hotkey` reports the combination *and* whether it registered |
+
+The grammar is deliberately small: `Ctrl` / `Alt` / `Shift` / `Win` plus letters, digits
+and `F1`–`F24`. At least one modifier is required, because a bare letter would swallow
+typing everywhere. Anything else is rejected with `invalid combination` rather than
+silently ignored.
+
+**A hotkey that failed to register looks exactly like one that works**, so the state is
+reported rather than assumed. The three real outcomes:
+
+- `registered` — working
+- `already taken by another program` — the panel is unaffected; this is a fact about the
+  machine, not a bug. `Win+1` is a good example: Windows owns it for snapping
+- `disabled` — deliberately off
+
+A failure is logged, raises one balloon, and unticks the menu item. Nothing else about
+the tray changes: a hotkey is a convenience, not a dependency. An unparseable value in
+`settings.json` falls back to `Alt+A` with a log line rather than leaving the key dead.
 
 ### The page/tray bridge
 

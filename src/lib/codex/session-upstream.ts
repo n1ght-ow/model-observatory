@@ -39,6 +39,15 @@ export type CodexSessionIndex = {
 	upstreams: Map<string, CodexUpstream>;
 	/** Session ids whose rows belong on the native DeepSeek page. */
 	nativeSessionIds: Set<string>;
+	/**
+	 * Session ids Codex sent through the local router.
+	 *
+	 * The router's own event log already contains every one of these requests, so a
+	 * view that merges the router log with CC Switch must drop them or count them
+	 * twice. The native DeepSeek page deliberately does *not* use this: it wants the
+	 * router-forwarded DeepSeek traffic, which the router log alone cannot name.
+	 */
+	routerSessionIds: Set<string>;
 	/** Row-level breakdown behind the native DeepSeek page's scope banner. */
 	stats: {
 		sessions: number;
@@ -220,6 +229,7 @@ function classify(
 	routerEvents: RouterEvent[]
 ): CodexSessionIndex {
 	const nativeSessionIds = new Set<string>();
+	const routerSessionIds = new Set<string>();
 	const upstreams = new Map<string, CodexUpstream>();
 	const routerIndex = buildRouterIndex(routerEvents);
 
@@ -262,6 +272,7 @@ function classify(
 		}
 		// A Codex session drives one provider profile, so the whole session is
 		// classified by its strongest evidence rather than row by row.
+		routerSessionIds.add(sessionId);
 		const winner = resolveRouterSession(sessionRows, routerIndex, routerEvents);
 		if (winner === "deepseek") {
 			upstreams.set(sessionId, "native-deepseek");
@@ -285,6 +296,7 @@ function classify(
 		nativeProviders,
 		upstreams,
 		nativeSessionIds,
+		routerSessionIds,
 		stats: {
 			sessions: perSession.size,
 			nativeDirect,

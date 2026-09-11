@@ -98,7 +98,7 @@ export function DeepSeekDashboard({
 		error: "DeepSeek account data is unavailable.",
 		keySource: null,
 	};
-	const { window: windowStats, daily, windowModels, upstream } = snapshot;
+	const { window: windowStats, daily, windowModels } = snapshot;
 	const rangeLabel = periodLabel(snapshot);
 	const windowCost = windowStats.totalCostCny ?? 0;
 	const allTimeCost = snapshot.totals.totalCostCny ?? 0;
@@ -111,52 +111,6 @@ export function DeepSeekDashboard({
 	const models = [...windowModels].sort(
 		(a, b) => b.tokens - a.tokens || b.requests - a.requests
 	);
-	// Scope banner: every native api.deepseek.com request on this machine —
-	// Codex CLI rows (direct or through the router) plus harness turns — against
-	// the Codex rows another upstream served.
-	const upstreamTotal = upstream
-		? upstream.included + upstream.excluded
-		: 0;
-	const upstreamSegments = upstream
-		? [
-				{
-					key: "direct",
-					label: "Codex → api.deepseek.com",
-					value: upstream.breakdown.nativeDirect,
-					className: "bg-emerald-500",
-				},
-				{
-					key: "harness",
-					label: "harness → api.deepseek.com",
-					value: upstream.breakdown.harness,
-					className: "bg-emerald-400",
-				},
-				{
-					key: "router",
-					label: "Codex → router → DeepSeek",
-					value: upstream.breakdown.nativeViaRouter,
-					className: "bg-emerald-500/50",
-				},
-				{
-					key: "command-code",
-					label: "router → Command Code",
-					value: upstream.breakdown.commandCode,
-					className: "bg-amber-500",
-				},
-				{
-					key: "other",
-					label: "other host",
-					value: upstream.breakdown.otherUpstream,
-					className: "bg-muted-foreground/50",
-				},
-				{
-					key: "unclassified",
-					label: "unclassified",
-					value: upstream.breakdown.unclassified,
-					className: "bg-muted-foreground/25",
-				},
-			].filter((segment) => segment.value > 0)
-		: [];
 	const credentialLabel =
 		account.keySource === "env"
 			? "DEEPSEEK_API_KEY (environment)"
@@ -167,54 +121,6 @@ export function DeepSeekDashboard({
 	return (
 		<div className="grid grid-cols-1 gap-px bg-border p-px md:grid-cols-2 lg:grid-cols-4">
 			<MetricStatGrid snapshot={snapshot} />
-			<DashboardCard className="gap-0 lg:col-span-4">
-				<CardContent className="flex flex-col gap-3 px-6 py-4">
-					<div className="flex flex-wrap items-center gap-2 text-xs">
-						<Badge variant="outline">
-							every native api.deepseek.com request
-						</Badge>
-						<span className="tabular-nums text-muted-foreground">
-							{formatInteger(upstream?.included ?? 0)} native requests ·{" "}
-							{formatInteger(
-								(upstream?.breakdown.nativeDirect ?? 0) +
-									(upstream?.breakdown.nativeViaRouter ?? 0)
-							)}{" "}
-							from the Codex log +{" "}
-							{formatInteger(upstream?.breakdown.harness ?? 0)} from the harness
-						</span>
-					</div>
-					{upstream && upstreamTotal > 0 ? (
-						<>
-							<div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
-								{upstreamSegments.map((segment) => (
-									<div
-										className={segment.className}
-										key={segment.key}
-										style={{ width: `${(segment.value / upstreamTotal) * 100}%` }}
-										title={`${segment.label}: ${formatInteger(segment.value)}`}
-									/>
-								))}
-							</div>
-							<div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-								{upstreamSegments.map((segment) => (
-									<span className="flex items-center gap-1.5" key={segment.key}>
-										<span
-											className={`size-2 rounded-full ${segment.className}`}
-										/>
-										{segment.label}{" "}
-											<span className="tabular-nums text-foreground">
-											{formatInteger(segment.value)}
-										</span>
-									</span>
-								))}
-							</div>
-							{upstream?.detail ? (
-								<p className="text-xs text-muted-foreground">{upstream.detail}</p>
-							) : null}
-						</>
-					) : null}
-				</CardContent>
-			</DashboardCard>
 
 			<DashboardCard className="gap-0 md:col-span-2">
 				<CardHeader className="border-b">
