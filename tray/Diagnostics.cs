@@ -52,7 +52,9 @@ namespace RouterMonitorTray
             Add(lines, fields, "document.title", await EvalAsync(panel, "document.title"));
             Add(lines, fields, "document size", await EvalAsync(panel,
                 "document.documentElement.scrollWidth + 'x' + document.documentElement.scrollHeight"));
-            Add(lines, fields, "escape bridge", await EvalAsync(panel, "String(window.__rmBridge)"));
+            Add(lines, fields, "escape bridge", await EvalAsync(panel,
+                "window.__rmBridge ? ('v' + window.__rmBridge.version) : '(absent)'"));
+            Add(lines, fields, "bridge last", panel.BridgeState);
             Add(lines, fields, "webview2 core", panel.CoreVersion());
             Add(lines, fields, "content ready", panel.IsContentReady ? "yes" : "no");
             Add(lines, fields, "webview failed", panel.WebViewFailed ? "yes" : "no");

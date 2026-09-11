@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -48,14 +49,30 @@ namespace RouterMonitorTray
         private const int SC_SIZE = 0xF000;
         private const int SC_MOVE = 0xF010;
 
+        /// <summary>
+        /// The one place the page and the tray speak to each other. Every message is
+        /// a versioned envelope - `{v:1,type:...}` - so the page can tell what it is
+        /// running inside, and so a new message type is a new `case` on both sides
+        /// rather than a new magic string. This is v1.
+        /// </summary>
         private const string BridgeScript =
-            "(function(){if(window.__rmBridge){return;}window.__rmBridge=1;" +
+            "(function(){if(window.__rmBridge){return;}" +
+            "var post=function(m){try{window.chrome.webview.postMessage(JSON.stringify(m));}catch(e){}};" +
+            "var listen=function(fn){try{window.chrome.webview.addEventListener('message',function(e){" +
+            "var m=e.data;if(typeof m==='string'){try{m=JSON.parse(m);}catch(err){return;}}" +
+            "if(m&&m.v===1){fn(m);}});}catch(e){}};" +
+            "window.__rmBridge={version:1,post:post,listen:listen," +
+            "close:function(){post({v:1,type:'close'});}," +
+            "openExternal:function(url){post({v:1,type:'openExternal',url:String(url)});}," +
+            "setPinned:function(on){post({v:1,type:'pin',pinned:!!on});}," +
+            "ready:function(){post({v:1,type:'ready'});}};" +
             "document.addEventListener('keydown',function(e){" +
             "if(e.key!=='Escape'){return;}" +
             "var open=document.querySelector('[role=\"dialog\"],[role=\"listbox\"],[role=\"menu\"]');" +
             "if(open){return;}" +
-            "try{window.chrome.webview.postMessage('rm:close');}catch(err){}" +
-            "},true);})();";
+            "window.__rmBridge.close();" +
+            "},true);" +
+            "post({v:1,type:'bridge'});})();";
 
         [StructLayout(LayoutKind.Sequential)]
         private struct WINDOWPOS
@@ -85,6 +102,9 @@ namespace RouterMonitorTray
         private bool initStarted;
         private bool userMoved;
         private int suspendResult = -1;
+        private string bridgeLastMessage = "(none)";
+        private string lastDashboardUri;
+        private bool cancelledNavigation;
 
         private Point anchor;
         private string startPage = "/";
@@ -127,6 +147,18 @@ namespace RouterMonitorTray
             get { return stayOpen; }
             set { stayOpen = value; }
         }
+
+        /// <summary>The last message type the page sent, for the diagnostics report.</summary>
+        public string BridgeState
+        {
+            get { return bridgeLastMessage; }
+        }
+
+        /// <summary>
+        /// Raised when the page pins or unpins the panel, so the tray menu and the
+        /// settings file can follow a decision that was made inside the page.
+        /// </summary>
+        public event Action<bool> PinnedChanged;
 
         public bool WebViewFailed
         {
@@ -673,17 +705,27 @@ namespace RouterMonitorTray
             }
         }
 
+        /// <summary>
+        /// Reloads the dashboard route the panel is on. Deliberately not
+        /// CoreWebView2.Reload(), which reloads the *current* URL - if the panel had
+        /// somehow ended up on an API response, that reloaded the API response and
+        /// there was no way back.
+        /// </summary>
         public void Reload()
         {
             if (webViewReady)
             {
                 try
                 {
-                    webView.CoreWebView2.Reload();
+                    string target = string.IsNullOrEmpty(lastDashboardUri)
+                        ? ServerHost.BaseUrl + startPage
+                        : lastDashboardUri;
+                    webView.CoreWebView2.Navigate(target);
                     return;
                 }
-                catch
+                catch (Exception ex)
                 {
+                    LogInit("reload: " + ex.Message);
                 }
             }
             StartInit();
@@ -855,6 +897,8 @@ namespace RouterMonitorTray
                 core.Settings.IsGeneralAutofillEnabled = false;
 
                 core.WebMessageReceived += OnWebMessage;
+                core.NavigationStarting += OnNavigationStarting;
+                core.NewWindowRequested += OnNewWindowRequested;
                 core.NavigationCompleted += OnNavigationCompleted;
                 core.ProcessFailed += OnProcessFailed;
                 await core.AddScriptToExecuteOnDocumentCreatedAsync(BridgeScript).ConfigureAwait(true);
@@ -902,11 +946,31 @@ namespace RouterMonitorTray
 
         private void OnNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
+            if (cancelledNavigation && !e.IsSuccess)
+            {
+                cancelledNavigation = false;
+                return;
+            }
+            cancelledNavigation = false;
             if (e.IsSuccess)
             {
                 if (loading.Visible)
                 {
                     loading.Visible = false;
+                }
+                string uri = null;
+                try
+                {
+                    uri = webView.CoreWebView2.Source;
+                }
+                catch
+                {
+                }
+                if (IsDashboard(uri))
+                {
+                    // Remembered so "reload" means "reload this page", not "reload
+                    // whatever URL we happen to be on".
+                    lastDashboardUri = uri;
                 }
             }
             else
@@ -916,21 +980,230 @@ namespace RouterMonitorTray
             }
         }
 
+        /// <summary>
+        /// Page to tray. Unknown types are logged and ignored rather than fatal: the
+        /// page may be newer than the tray, and a dashboard that will not open because
+        /// it said something unexpected is a worse failure than a dropped message.
+        /// </summary>
         private void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
-            string message;
+            string raw;
             try
             {
-                message = e.TryGetWebMessageAsString();
+                raw = e.TryGetWebMessageAsString();
             }
-            catch
+            catch (Exception ex)
+            {
+                LogInit("bridge: unreadable message (" + ex.Message + ")");
+                return;
+            }
+            if (string.IsNullOrEmpty(raw))
             {
                 return;
             }
-            if (message == "rm:close")
+
+            string type = raw;
+            string url = null;
+            bool pinned = false;
+            bool wellFormed = false;
+
+            if (raw[0] == '{')
             {
-                HidePanel();
+                try
+                {
+                    Dictionary<string, object> envelope =
+                        ControlProtocol.Serializer.Deserialize<Dictionary<string, object>>(raw);
+                    type = Field(envelope, "type");
+                    url = Field(envelope, "url");
+                    pinned = Flag(envelope, "pinned");
+                    wellFormed = Field(envelope, "v") == "1";
+                }
+                catch (Exception ex)
+                {
+                    LogInit("bridge: bad envelope (" + ex.Message + "): " + Truncate(raw));
+                    return;
+                }
             }
+            else if (raw != "rm:close")
+            {
+                wellFormed = false;
+            }
+            else
+            {
+                // The pre-v1 magic string, kept working so an older cached page cannot
+                // wedge the flyout.
+                type = "close";
+            }
+
+            if (!wellFormed && raw[0] == '{')
+            {
+                LogInit("bridge: unsupported version in " + Truncate(raw));
+                return;
+            }
+
+            bridgeLastMessage = type;
+            switch (type)
+            {
+                case "bridge":
+                case "ready":
+                    // The page is up and knows where it is; tell it what the tray thinks.
+                    PublishState();
+                    break;
+                case "close":
+                    HidePanel();
+                    break;
+                case "openExternal":
+                    Program.OpenExternal(url);
+                    break;
+                case "pin":
+                    StayOpen = pinned;
+                    if (PinnedChanged != null)
+                    {
+                        PinnedChanged(pinned);
+                    }
+                    PublishState();
+                    break;
+                default:
+                    LogInit("bridge: unknown type '" + type + "'");
+                    break;
+            }
+        }
+
+        /// <summary>Tells the page what the tray currently is, over the same protocol.</summary>
+        private void PublishState()
+        {
+            if (!webViewReady)
+            {
+                return;
+            }
+            try
+            {
+                Dictionary<string, object> state = new Dictionary<string, object>();
+                state["v"] = 1;
+                state["type"] = "state";
+                state["pinned"] = stayOpen;
+                webView.CoreWebView2.PostWebMessageAsJson(ControlProtocol.Encode(state));
+            }
+            catch (Exception ex)
+            {
+                LogInit("bridge: could not publish state (" + ex.Message + ")");
+            }
+        }
+
+        private static string Field(Dictionary<string, object> map, string key)
+        {
+            object raw;
+            if (map != null && map.TryGetValue(key, out raw) && raw != null)
+            {
+                return Convert.ToString(raw);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Reads a JSON boolean. Convert.ToString on a bool gives "True", so comparing
+        /// the text against "true" silently answers false for every value.
+        /// </summary>
+        private static bool Flag(Dictionary<string, object> map, string key)
+        {
+            object raw;
+            if (map == null || !map.TryGetValue(key, out raw) || raw == null)
+            {
+                return false;
+            }
+            if (raw is bool)
+            {
+                return (bool)raw;
+            }
+            string text = Convert.ToString(raw).Trim();
+            return string.Equals(text, "true", StringComparison.OrdinalIgnoreCase) || text == "1";
+        }
+
+        private static string Truncate(string text)
+        {
+            if (text == null)
+            {
+                return "(null)";
+            }
+            return text.Length <= 200 ? text : text.Substring(0, 200) + "...";
+        }
+
+        /// <summary>
+        /// The flyout has no address bar and no back button, so a navigation away from
+        /// the dashboard is a one way trip - clicking one of the "JSON" links used to
+        /// strand the panel on a bare API response. Anything that is not our own origin
+        /// is cancelled here and handed to the real browser instead.
+        /// </summary>
+        private void OnNavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (IsDashboard(e.Uri))
+            {
+                return;
+            }
+            e.Cancel = true;
+            // Cancelling still produces a NavigationCompleted with a failure status,
+            // and that would put the "page failed to load" label on screen for a
+            // navigation the user never wanted in the first place.
+            cancelledNavigation = true;
+            if (IsWeb(e.Uri))
+            {
+                LogInit("navigation: blocked " + Truncate(e.Uri) + " (opening it externally)");
+                Program.OpenExternal(e.Uri);
+            }
+            else
+            {
+                // about:blank and friends are the engine's own business, not the user's.
+                LogInit("navigation: refused " + Truncate(e.Uri));
+            }
+        }
+
+        private static bool IsWeb(string uri)
+        {
+            if (string.IsNullOrEmpty(uri))
+            {
+                return false;
+            }
+            return uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// A target="_blank" link with nobody listening gets a WebView2 popup window,
+        /// which has no chrome and cannot be closed from the page. Handing it to the
+        /// system browser is what the user meant by "open this".
+        /// </summary>
+        private void OnNewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs e)
+        {
+            e.Handled = true;
+            if (IsWeb(e.Uri))
+            {
+                LogInit("navigation: new window " + Truncate(e.Uri) + " (opening it externally)");
+                Program.OpenExternal(e.Uri);
+            }
+            else
+            {
+                LogInit("navigation: refused new window " + Truncate(e.Uri));
+            }
+        }
+
+        /// <summary>
+        /// Whether a URL is a page the flyout can be left sitting on. Same origin is
+        /// not enough: the dashboard's own JSON endpoints live there too, and a bare
+        /// API response has no chrome to navigate back with - that is exactly how the
+        /// panel used to get stranded.
+        /// </summary>
+        private static bool IsDashboard(string uri)
+        {
+            if (string.IsNullOrEmpty(uri))
+            {
+                return false;
+            }
+            if (!uri.StartsWith(ServerHost.BaseUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            string path = uri.Substring(ServerHost.BaseUrl.Length);
+            return !path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

@@ -9,6 +9,7 @@ import { CustomSidebarTrigger } from "@/components/custom-sidebar-trigger";
 import { NavUser } from "@/components/nav-user";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CommandMenu } from "@/components/command-menu";
+import { TrayControls } from "@/components/tray-controls";
 import { usePathname } from "next/navigation";
 
 export function AppHeader() {
@@ -31,6 +32,7 @@ export function AppHeader() {
 				<AppBreadcrumbs page={activeItem} />
 			</div>
 			<div className="flex items-center gap-3">
+				<TrayControls />
 				<CommandMenu />
 				<ThemeToggle />
 				<Separator

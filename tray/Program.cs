@@ -50,6 +50,8 @@ namespace RouterMonitorTray
             panel.EnsureHandle();
             panel.StayOpen = SettingsStore.Current.stayOpen;
             menu = BuildMenu();
+            // The page can pin itself; the menu and the settings file have to agree.
+            panel.PinnedChanged += OnPinnedChanged;
 
             notifyIcon = new NotifyIcon();
             notifyIcon.Icon = trayIcon;
@@ -175,6 +177,17 @@ namespace RouterMonitorTray
             }
         }
 
+        /// <summary>The page pinned or unpinned the panel; keep the menu and the file in step.</summary>
+        private void OnPinnedChanged(bool pinned)
+        {
+            SettingsStore.Current.stayOpen = pinned;
+            SettingsStore.Save();
+            if (itemPin != null)
+            {
+                itemPin.Checked = pinned;
+            }
+        }
+
         /// <summary>Applies a drawn size and keeps the menu's ticks honest.</summary>
         private void ApplyScale(double value)
         {
@@ -197,6 +210,65 @@ namespace RouterMonitorTray
                     entry.Checked = Math.Abs(Convert.ToDouble(entry.Tag) - current) < 0.001;
                 }
             }
+        }
+
+        /// <summary>
+        /// Runs a script inside the live flyout. This is the only way to see what the
+        /// page actually did - a browser cannot be asked to run script in this
+        /// WebView, and the diagnostics need it to measure interaction.
+        /// </summary>
+        private ControlResponse HandleEval(ControlRequest request)
+        {
+            // Scripts are far too easy to mangle on a command line (spaces, quotes),
+            // so a file is the reliable way in and 'script' is the convenience.
+            string script = ArgString(request, "script", null);
+            string from = ArgString(request, "file", null);
+            if (!string.IsNullOrEmpty(from))
+            {
+                try
+                {
+                    script = File.ReadAllText(from);
+                }
+                catch (Exception ex)
+                {
+                    return ControlResponse.Failure(request.id, "could not read '" + from + "': " + ex.Message);
+                }
+            }
+            if (string.IsNullOrEmpty(script))
+            {
+                return ControlResponse.Failure(request.id, "eval needs a 'script' or a 'file' argument");
+            }
+            int timeout = ArgInt(request, "timeout", 20000);
+            return Complete(OnUiAsync(delegate
+            {
+                return EvalResult(script);
+            }), timeout + 10000, request.id);
+        }
+
+        private async Task<Dictionary<string, object>> EvalResult(string script)
+        {
+            string value;
+            try
+            {
+                value = Diagnostics.Describe(await panel.RunScriptAsync(script));
+                if (value == "null")
+                {
+                    // WebView2 answers "null" both for a null result and for a script
+                    // that threw, and the difference matters when debugging.
+                    value = "(null or the script threw - see logs/tray-init.log)";
+                }
+            }
+            catch (Exception ex)
+            {
+                value = "(error: " + ex.Message + ")";
+            }
+            List<string> lines = new List<string>();
+            Dictionary<string, object> fields = new Dictionary<string, object>();
+            AddLine(lines, fields, "result", value);
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["lines"] = lines;
+            result["fields"] = fields;
+            return result;
         }
 
         /// <summary>
@@ -305,13 +377,7 @@ namespace RouterMonitorTray
 
         private void OpenWeb()
         {
-            try
-            {
-                Process.Start(new ProcessStartInfo(ServerHost.BaseUrl + "/") { UseShellExecute = true });
-            }
-            catch
-            {
-            }
+            Program.OpenExternal(ServerHost.BaseUrl + "/");
         }
 
         private static string StartupLinkPath()
@@ -418,6 +484,7 @@ namespace RouterMonitorTray
             control.Register("reload", HandleReload);
             control.Register("probe", HandleProbe);
             control.Register("shot", HandleShot);
+            control.Register("eval", HandleEval);
             control.Register("config", HandleConfig);
             control.Register("quit", HandleQuit);
         }
@@ -1189,6 +1256,35 @@ namespace RouterMonitorTray
         private static string CrashLogPath()
         {
             return Path.Combine(Path.GetTempPath(), "RouterMonitorTray-crash.log");
+        }
+
+        /// <summary>
+        /// Hands a URL to the shell. Only http and https are allowed through: the page
+        /// can ask for this, and "the page asked" is not a reason to hand the shell an
+        /// arbitrary protocol handler.
+        /// </summary>
+        internal static void OpenExternal(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+            {
+                return;
+            }
+            string trimmed = url.Trim();
+            if (!trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                PanelForm.LogInit("external: refused non-http url " + trimmed);
+                return;
+            }
+            try
+            {
+                PanelForm.LogInit("external: opening " + trimmed);
+                Process.Start(new ProcessStartInfo(trimmed) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                PanelForm.LogInit("external: could not open " + trimmed + " (" + ex.Message + ")");
+            }
         }
 
         internal static void ReportCrash(object detail)

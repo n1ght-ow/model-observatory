@@ -461,6 +461,7 @@ discoverable without reading the source.
 | `reload` | reload the page in place |
 | `probe` | viewport, DPR, page title, document size, WebView2 core, bridge state |
 | `shot` | `args.path` - save the flyout as it appears on screen |
+| `eval` | `args.script` or `args.file` - run script inside the live flyout |
 | `config` | read the settings, or change one live |
 | `quit` | tear down the way the menu's Quit does |
 
@@ -493,13 +494,63 @@ goes, the WebView is suspended and disposed, and the exit is recorded in
 `logs/tray-init.log` as `shutdown: <reason>`. Killing the process was what used
 to leave `msedgewebview2` children holding the profile lock.
 
-### Escaping the flyout
+### The page/tray bridge
 
-The page itself has no idea it is in a tray, so a small bridge script is injected on
-document creation. It listens for `Escape` on the capture phase and posts
-`rm:close` to the host **only when no dialog, listbox or menu is open** — so
-`Escape` unwinds an open Cmd-K dialog first and only a bare panel hides the flyout,
-which is the behaviour the hand-drawn panel had.
+The flyout renders the dashboard, so the page has to know it is in a tray and be
+able to ask the tray for things a browser cannot do. A script is injected on
+document creation that installs `window.__rmBridge`, and **its presence is the
+answer to "am I in the tray"** — `src/lib/tray/bridge.ts` is the page's half, and
+`BridgeScript` in `tray/PanelForm.cs` is the tray's.
+
+Every message is a versioned envelope, `{v:1,type:...}`, so a new message is a new
+`case` on both sides rather than a new magic string.
+
+| Page → tray | Meaning |
+| --- | --- |
+| `bridge` | sent by the injected script as soon as it installs |
+| `ready` | the app has hydrated and can receive messages |
+| `close` | hide the flyout |
+| `openExternal` `{url}` | open a URL in the default browser, not in the flyout |
+| `pin` `{pinned}` | pin the flyout open, or stop pinning it |
+
+| Tray → page | Meaning |
+| --- | --- |
+| `state` `{pinned}` | what the tray currently is; sent in reply to `bridge` and `ready` |
+
+The tray ignores an unknown `type` and logs it rather than failing: a page newer
+than the tray should not be able to stop the flyout from opening. The pre-v1
+`rm:close` string still works, so a stale cached page cannot wedge the panel.
+
+Two things follow from the bridge being real:
+
+- **The page knows.** In the flyout the header grows a pin and a close button
+  (`src/components/tray-controls.tsx`); in a browser it renders nothing at all.
+  Pinning from the page updates the tray menu and `settings.json`, because both go
+  through the same handler.
+- **`Escape` still unwinds a dialog first.** The injected script keeps the capture
+  phase listener and only closes the panel when no dialog, listbox or menu is open.
+
+### Staying on the dashboard
+
+NaN
+turned off, so a navigation away from the dashboard is a one way trip. Two guards
+keep that from happening:
+
+- **`NavigationStarting`** cancels anything that is not a page of this dashboard and
+  hands it to the default browser. Same origin is deliberately *not* enough: the
+  dashboard's own `/api/` endpoints live there too, and the four **JSON** buttons on
+  `/command-code`, `/deepseek` and the source cards used to strand the panel on a
+  bare API response. `Reload` is `Navigate` to the remembered dashboard route rather
+  than `CoreWebView2.Reload()` — reloading the current URL reloaded the API response,
+  which is why that state was previously unrecoverable.
+- **`NewWindowRequested`** is handled, so `target="_blank"` links (Platform, Docs)
+  open in the default browser. Left unhandled, WebView2 gives them a popup window
+  with no chrome. Marking the event handled also stops the popup existing at all,
+  so the flyout keeps its place.
+
+A cancelled navigation still reports a failure to `NavigationCompleted`, which would
+flash the "page failed to load" label over a navigation nobody wanted; that specific
+failure is suppressed.
 
 ### Diagnostics
 
