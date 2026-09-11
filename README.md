@@ -344,6 +344,18 @@ blamed on this one.
 user's Startup folder (an ONLOGON scheduled task would require elevation) and
 starts the app. It also removes the web host's logon task if one exists.
 
+**The browser is never needed.** The tray starts the local server itself if it is
+not already listening and renders the page inside its own WebView2, so the flyout
+works with no browser window open and with no dashboard tab anywhere. Start the
+tray and nothing else; the server comes up behind it.
+
+If WebView2 cannot be initialised the panel says so briefly and retries, rather
+than staying dead for the rest of the session, and the underlying exception is
+appended to `logs/tray-init.log`. The most common cause is a previous instance
+that was force-killed while Chromium was alive: the orphaned `msedgewebview2`
+processes keep the profile lock until they exit on their own. `taskkill /IM
+msedgewebview2.exe` clears it, but the retry means a restart is not required.
+
 Tray behaviour:
 
 - Left-click the icon, or pick **打开面板**, to open the flyout; it hides again when
