@@ -32,7 +32,7 @@ namespace RouterMonitorTray
         /// at the full 1688x935 CSS viewport, so the layout is untouched and only
         /// the drawn size changes.
         /// </summary>
-        private const float UserScale = 0.7f;
+        private const float UserScale = 0.85f;
 
         /// <summary>
         /// Height of the grip strip above the page, in physical pixels. At 150%

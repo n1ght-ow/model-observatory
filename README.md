@@ -245,12 +245,13 @@ screenshots were taken at — so the flyout never falls into the app's responsiv
 layout. That is achieved by pairing the window size with `ZoomFactor`; the two move
 together so the CSS viewport is constant while the drawn size is not.
 
-The drawn size is **70% of the browser's own** (`UserScale` in `PanelForm.cs`).
-At 150% display scaling that means `ZoomFactor = 0.7` and a window of
-**1772x1002**, whose page still reports `innerWidth x innerHeight = 1688x935`.
-Without the 0.7 the window would be 2532x1402 — on a 2560x1600 panel that is 99% of
-the width and 88% of the height, i.e. effectively full screen, which is what the
-original brief produced and what made the panel feel wrong to use.
+The drawn size is **85% of the browser's own** (`UserScale` in `PanelForm.cs`; a
+single constant, so it is one number to change). At 150% display scaling that means
+`ZoomFactor = 0.85` and a window of **2152x1212**, whose page still reports
+`innerWidth x innerHeight = 1688x935`. At 1.0 the window would be 2532x1402 — on a
+2560x1600 panel that is 99% of the width and 88% of the height, i.e. effectively full
+screen, which is what the original brief produced and what made the panel feel wrong
+to use. 70% was tried first and read as too small, hence 85%.
 
 If even the reduced size would not fit the work area, the window and `ZoomFactor`
 are lowered together again; the **layout never changes**, only the drawn size.
@@ -292,7 +293,7 @@ applications' WebView2 instances are never included.
 | Scenario | Measured | Target |
 | --- | --- | --- |
 | Click tray icon → panel visible | same frame (a `Show()`) | 200 ms |
-| Drag the grip → window moved | follows the pointer exactly (verified by simulated drag: 240x80 px input, 240x80 px moved) | — |
+| Drag the grip → window moved | follows the pointer exactly (simulated drag: 225x75 px input → 225x75 px moved) | — |
 | **Reopen after suspend** (script round-trip into the resumed renderer) | **60–73 ms** | 200 ms |
 | **In-panel navigation** (click a sidebar link → route changed) | **45–47 ms** | no perceptible stall |
 | First open of the process: navigation complete → **interactive** | 556 ms → **+327 ms = ~0.9 s** | see note |
