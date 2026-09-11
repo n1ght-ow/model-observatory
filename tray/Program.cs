@@ -353,6 +353,23 @@ namespace RouterMonitorTray
         }
 
         /// <summary>
+        /// Measures this flyout: visible cost, suspend, hidden cost, warm reopen and
+        /// an in-panel interaction. Only the tray that owns the WebView can take these
+        /// numbers.
+        /// </summary>
+        private ControlResponse HandleCycle(ControlRequest request)
+        {
+            string path = ArgString(request, "path", null);
+            string page = ArgString(request, "page", null);
+            int holdMs = ArgInt(request, "holdMs", 30000);
+            int timeout = ArgInt(request, "timeout", 60000);
+            return Complete(OnUiAsync(delegate
+            {
+                return Diagnostics.CycleAsync(panel, path, page, holdMs, timeout);
+            }), holdMs + timeout + 120000, request.id);
+        }
+
+        /// <summary>
         /// Runs a script inside the live flyout. This is the only way to see what the
         /// page actually did - a browser cannot be asked to run script in this
         /// WebView, and the diagnostics need it to measure interaction.
@@ -625,6 +642,7 @@ namespace RouterMonitorTray
             control.Register("probe", HandleProbe);
             control.Register("shot", HandleShot);
             control.Register("eval", HandleEval);
+            control.Register("cycle", HandleCycle);
             control.Register("config", HandleConfig);
             control.Register("quit", HandleQuit);
         }
@@ -927,470 +945,10 @@ namespace RouterMonitorTray
     }
 
     /// <summary>
-    /// Headless driver used to collect evidence: it opens the real flyout, waits
-    /// for the page, then prints diagnostics or saves a screenshot. It exists so
-    /// the measurements in the README can be reproduced with one command.
+    /// Entry point, and the client half of the control channel. Every capability
+    /// lives in the tray; this process either starts one or talks to the one that is
+    /// already running, which is why it has no diagnostic code of its own.
     /// </summary>
-    internal sealed class CliContext : ApplicationContext
-    {
-        private readonly PanelForm panel;
-        private readonly string mode;
-        private readonly string output;
-        private readonly string page;
-        private readonly string reportPath;
-        private readonly int waitMs;
-        private readonly int holdMs;
-        private readonly System.Windows.Forms.Timer timer;
-        private readonly Stopwatch clock = new Stopwatch();
-        private readonly List<string> lines = new List<string>();
-        private int elapsed;
-        private bool done;
-        private bool reported;
-        private long hiddenAtMs;
-        private double lastWvCpuMs = -1;
-
-        public CliContext(string mode, string output, string reportPath, string page, int waitMs, int holdMs)
-        {
-            this.mode = mode;
-            this.output = output;
-            this.reportPath = reportPath;
-            this.page = page;
-            this.waitMs = waitMs;
-            this.holdMs = holdMs;
-
-            panel = new PanelForm();
-            Say("mode            : " + mode);
-            Say("display scale   : " + panel.DpiScale.ToString("0.###"));
-            Say("css-per-px scale: " + panel.CssScale.ToString("0.###"));
-            Say("webview zoom    : " + panel.WebZoomFactor.ToString("0.###"));
-            Say("panel client px : " + panel.ClientSize.Width + "x" + panel.ClientSize.Height);
-
-            if (!string.IsNullOrEmpty(page))
-            {
-                panel.StartPage = page;
-            }
-
-            timer = new System.Windows.Forms.Timer();
-            timer.Interval = 50;
-            timer.Tick += OnTick;
-            timer.Start();
-
-            clock.Start();
-            panel.ShowPanel();
-            Say("shown at        : 0 ms");
-        }
-
-        private void Say(string line)
-        {
-            lines.Add(line);
-            Console.WriteLine(line);
-            if (string.IsNullOrEmpty(reportPath))
-            {
-                return;
-            }
-            // Appended immediately: if the app dies mid-run the log still shows
-            // how far it got.
-            try
-            {
-                string full = Path.GetFullPath(reportPath);
-                string dir = Path.GetDirectoryName(full);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
-                File.AppendAllText(full, line + Environment.NewLine);
-            }
-            catch
-            {
-            }
-        }
-
-        private void OnTick(object sender, EventArgs e)
-        {
-            elapsed += 50;
-
-            if (!reported && panel.IsContentReady)
-            {
-                reported = true;
-                Say("first content   : " + clock.ElapsedMilliseconds + " ms");
-
-                // Navigation completing is not the same as being usable: measure
-                // how long the React tree takes to actually render and hydrate.
-                // Only meaningful in probe mode, which stays on the Overview page;
-                // the cycle mode navigates to Requests, which has no charts.
-                if (mode != "probe")
-                {
-                    return;
-                }
-                long start = clock.ElapsedMilliseconds;
-                string marker = "";
-                while (clock.ElapsedMilliseconds - start < 20000)
-                {
-                    Application.DoEvents();
-                    Thread.Sleep(10);
-                    marker = Eval("(function(){var svg=document.querySelectorAll('svg.recharts-surface');" +
-                        "var main=document.querySelector('main');" +
-                        "if(!main){return '';}" +
-                        "return String(svg.length)+'|'+String(document.querySelectorAll('button').length)+'|'+" +
-                        "String(!!(window.next&&window.next.router));})()");
-                    if (marker.Length > 0)
-                    {
-                        string[] parts = marker.Split('|');
-                        int charts;
-                        int buttons;
-                        if (parts.Length == 3 && int.TryParse(parts[0], out charts) && int.TryParse(parts[1], out buttons)
-                            && charts > 0 && buttons > 5)
-                        {
-                            break;
-                        }
-                    }
-                }
-                Say("hydrated        : " + (clock.ElapsedMilliseconds - start) + " ms after first content (charts=" + marker + ")");
-            }
-
-            if (done)
-            {
-                return;
-            }
-            if (!reported && elapsed < waitMs)
-            {
-                return;
-            }
-            if (!reported)
-            {
-                Say("timeout waiting for content");
-            }
-            done = true;
-            timer.Stop();
-
-            try
-            {
-                if (mode == "cycle")
-                {
-                    RunCycle();
-                }
-                else if (mode == "shot")
-                {
-                    Settle();
-                    panel.CaptureTo(output);
-                    Say("wrote           : " + Path.GetFullPath(output));
-                }
-                else
-                {
-                    Probe();
-                }
-            }
-            catch (Exception ex)
-            {
-                Say("error           : " + ex.Message);
-            }
-            WriteReport();
-            ExitThread();
-        }
-
-        private void Settle()
-        {
-            // Let the compositor settle so a capture is never a half-painted frame.
-            Application.DoEvents();
-            Thread.Sleep(700);
-            Application.DoEvents();
-        }
-
-        /// <summary>
-        /// Runs a script and waits for it without deadlocking: ExecuteScriptAsync
-        /// completes on the UI thread, so the message loop has to keep pumping.
-        /// </summary>
-        private string Eval(string script)
-        {
-            Task<string> task = panel.RunScriptAsync(script);
-            int guard = 0;
-            while (!task.IsCompleted && guard < 3000)
-            {
-                Application.DoEvents();
-                Thread.Sleep(10);
-                guard++;
-            }
-            if (!task.IsCompleted)
-            {
-                return "(timeout)";
-            }
-            return Describe(task.Result);
-        }
-
-        private void Probe()
-        {
-            Say("css viewport    : " + Eval("window.innerWidth + 'x' + window.innerHeight"));
-            Say("device pixel r  : " + Eval("String(window.devicePixelRatio)"));
-            Say("document.title  : " + Eval("document.title"));
-            Say("document size   : " + Eval("document.documentElement.scrollWidth + 'x' + document.documentElement.scrollHeight"));
-            Say("escape bridge   : " + Eval("String(window.__rmBridge)"));
-            Say("webview2 core   : " + panel.CoreVersion());
-            Say("content ready   : " + (panel.IsContentReady ? "yes" : "no"));
-            Say("webview failed  : " + (panel.WebViewFailed ? "yes" : "no"));
-        }
-
-        /// <summary>
-        /// Opens, hides and reopens the flyout so the warm reopen latency and the
-        /// suspend behaviour can be measured without driving the tray icon.
-        /// </summary>
-        private void RunCycle()
-        {
-            Settle();
-
-            // Visible phase: the panel is on screen and the page is live.
-            Sample("visible");
-            for (int i = 0; i < 12; i++)
-            {
-                Pump(500);
-                Sample("visible");
-            }
-            if (!string.IsNullOrEmpty(output))
-            {
-                panel.CaptureTo(output);
-                Say("shot open       : " + Path.GetFullPath(output));
-            }
-
-            MeasureInteraction();
-
-            Say("suspend before  : " + panel.SuspendState);
-            hiddenAtMs = clock.ElapsedMilliseconds;
-            panel.HidePanel();
-            Application.DoEvents();
-
-            // Hidden phase: this is what the tray costs while nobody is looking.
-            Pump(500);
-            Sample("hidden");
-            int held = 500;
-            while (held < holdMs)
-            {
-                Pump(500);
-                held += 500;
-                Sample("hidden");
-            }
-
-            Say("hidden at       : " + hiddenAtMs + " ms");
-            Say("suspend hidden  : " + panel.SuspendState);
-
-            long reopenedAtMs = clock.ElapsedMilliseconds;
-            panel.ShowPanel();
-            Application.DoEvents();
-
-            // Honest warm-reopen measure: round-trip a script into the resumed
-            // renderer, which only answers once Chromium is actually running again.
-            string alive = "(no reply)";
-            while (clock.ElapsedMilliseconds - reopenedAtMs < 30000)
-            {
-                Application.DoEvents();
-                alive = Eval("String(document.querySelectorAll('svg.recharts-surface').length)");
-                if (alive != "(timeout)" && alive != "(null)")
-                {
-                    break;
-                }
-                Thread.Sleep(10);
-            }
-            long reopenMs = clock.ElapsedMilliseconds - reopenedAtMs;
-            Say("reopen latency  : " + reopenMs + " ms (script round-trip into the resumed renderer)");
-            Say("reopen charts   : " + alive);
-            Say("suspend after   : " + panel.SuspendState);
-            Sample("reopened");
-
-            Settle();
-            if (!string.IsNullOrEmpty(output))
-            {
-                string second = Path.ChangeExtension(output, null) + "-reopened.png";
-                panel.CaptureTo(second);
-                Say("shot reopened   : " + Path.GetFullPath(second));
-            }
-        }
-
-        /// <summary>
-        /// Times a real in-panel interaction: it clicks the Requests link exactly
-        /// as a user would and waits for the route to change. This is the number
-        /// that says whether clicking anything in the flyout feels slow.
-        /// </summary>
-        private void MeasureInteraction()
-        {
-            string clicked = Eval("(function(){var a=document.querySelector('a[href=\"/requests\"]');" +
-                "if(!a){return 'no-link';}a.click();return 'clicked';})()");
-            Say("nav click       : " + clicked);
-
-            long start = clock.ElapsedMilliseconds;
-            string path = "";
-            while (clock.ElapsedMilliseconds - start < 15000)
-            {
-                Application.DoEvents();
-                Thread.Sleep(10);
-                path = Eval("location.pathname");
-                if (path == "/requests")
-                {
-                    break;
-                }
-            }
-            Say("route change    : " + path + " after " + (clock.ElapsedMilliseconds - start) + " ms");
-
-            // A second interaction inside the loaded page: switch the range chip.
-            long chipStart = clock.ElapsedMilliseconds;
-            Eval("(function(){var b=document.querySelectorAll('button');" +
-                "for(var i=0;i<b.length;i++){if(b[i].textContent.trim()==='7d'){b[i].click();return 'clicked';}}" +
-                "return 'no-chip';})()");
-            Pump(1200);
-            Say("range chip      : responded in " + (clock.ElapsedMilliseconds - chipStart) + " ms (incl. 1200 ms settle)");
-        }
-
-        private void Pump(int ms)
-        {
-            int waited = 0;
-            while (waited < ms)
-            {
-                Application.DoEvents();
-                Thread.Sleep(10);
-                waited += 10;
-            }
-        }
-
-        /// <summary>
-        /// Records what the tray, Chromium and (indirectly) Node cost at this
-        /// instant. The CPU column is a delta since the previous sample, which is
-        /// what shows whether a hidden panel still burns cycles.
-        /// </summary>
-        /// <summary>
-        /// Records what this tray costs right now. Only Chromium processes
-        /// descended from this process are counted: other applications ship their
-        /// own WebView2 and must not be blamed on this one.
-        /// </summary>
-        private void Sample(string phase)
-        {
-            int[] pids = OwnBrowserProcesses();
-            long workingSet = 0;
-            long committed = 0;
-            double cpu = 0;
-            for (int i = 0; i < pids.Length; i++)
-            {
-                try
-                {
-                    using (Process browser = Process.GetProcessById(pids[i]))
-                    {
-                        workingSet += browser.WorkingSet64;
-                        committed += browser.PrivateMemorySize64;
-                        cpu += browser.TotalProcessorTime.TotalMilliseconds;
-                    }
-                }
-                catch
-                {
-                }
-            }
-
-            double delta = lastWvCpuMs < 0 ? 0 : cpu - lastWvCpuMs;
-            lastWvCpuMs = cpu;
-
-            Process self = Process.GetCurrentProcess();
-            Say(string.Format(
-                "sample {0,-8} wv2Count={1,-3} wv2Mem={2,7:N1}MB wv2Committed={3,7:N1}MB wv2CpuDelta={4,6:N0}ms trayMem={5,6:N1}MB",
-                phase, pids.Length, workingSet / 1048576.0, committed / 1048576.0,
-                delta, self.WorkingSet64 / 1048576.0));
-        }
-
-        /// <summary>
-        /// Finds the msedgewebview2 processes that belong to this host by walking
-        /// the parent chain up to our own pid.
-        /// </summary>
-        private static int[] OwnBrowserProcesses()
-        {
-            int selfPid = Process.GetCurrentProcess().Id;
-            List<int> found = new List<int>();
-            try
-            {
-                Dictionary<int, int> parents = new Dictionary<int, int>();
-                List<int> browsers = new List<int>();
-
-                ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                    "SELECT ProcessId, ParentProcessId, Name FROM Win32_Process WHERE Name='msedgewebview2.exe'");
-                foreach (ManagementBaseObject item in searcher.Get())
-                {
-                    int pid = Convert.ToInt32(item["ProcessId"]);
-                    int parent = Convert.ToInt32(item["ParentProcessId"]);
-                    browsers.Add(pid);
-                    parents[pid] = parent;
-                    item.Dispose();
-                }
-                searcher.Dispose();
-
-                ManagementObjectSearcher all = new ManagementObjectSearcher(
-                    "SELECT ProcessId, ParentProcessId FROM Win32_Process");
-                Dictionary<int, int> chain = new Dictionary<int, int>(parents);
-                foreach (ManagementBaseObject item in all.Get())
-                {
-                    int pid = Convert.ToInt32(item["ProcessId"]);
-                    int parent = Convert.ToInt32(item["ParentProcessId"]);
-                    if (!chain.ContainsKey(pid))
-                    {
-                        chain[pid] = parent;
-                    }
-                    item.Dispose();
-                }
-                all.Dispose();
-
-                for (int i = 0; i < browsers.Count; i++)
-                {
-                    int current = browsers[i];
-                    for (int depth = 0; depth < 12; depth++)
-                    {
-                        int parent;
-                        if (!chain.TryGetValue(current, out parent) || parent == 0)
-                        {
-                            break;
-                        }
-                        if (parent == selfPid)
-                        {
-                            found.Add(browsers[i]);
-                            break;
-                        }
-                        current = parent;
-                    }
-                }
-            }
-            catch
-            {
-            }
-            return found.ToArray();
-        }
-
-        private void WriteReport()
-        {
-            if (string.IsNullOrEmpty(reportPath))
-            {
-                return;
-            }
-            try
-            {
-                string full = Path.GetFullPath(reportPath);
-                string dir = Path.GetDirectoryName(full);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
-                File.WriteAllLines(full, lines.ToArray());
-            }
-            catch
-            {
-            }
-        }
-
-        private static string Describe(string raw)
-        {
-            if (raw == null)
-            {
-                return "(null)";
-            }
-            string text = raw.Trim();
-            if (text.Length >= 2 && text[0] == '"' && text[text.Length - 1] == '"')
-            {
-                text = text.Substring(1, text.Length - 2);
-            }
-            return text;
-        }
-    }
-
     internal static class Program
     {
         [DllImport("user32.dll")]
@@ -1532,37 +1090,35 @@ namespace RouterMonitorTray
                 return ForwardCommand(ctl, ArgPairs(args, "--arg"), report);
             }
 
-            // 2. Diagnostics prefer the tray that is already running. Standing up a
-            //    second WebView2 on the same user data folder is the documented way to
-            //    break both of them, so a live instance is asked to measure itself.
-            //    (`cycle` still measures itself locally: it drives the panel through a
-            //    visible/hidden/reopen sequence and is being folded into the channel
-            //    as the diagnostics move across.)
+            // 2. Diagnostics are measurements of the tray's own WebView, so they are
+            //    asked of a tray rather than taken by a second process: standing up a
+            //    rival WebView2 on the same user data folder is the documented way to
+            //    break both of them. If no tray is running, one is started and the
+            //    measurement is taken against it - which also means a diagnostic can
+            //    no longer leave a temporary process behind.
             if (mode != null)
             {
-                if (mode != "cycle" && InstanceRunning())
+                Dictionary<string, object> args2 = new Dictionary<string, object>();
+                if (!string.IsNullOrEmpty(output))
                 {
-                    Dictionary<string, object> args2 = new Dictionary<string, object>();
-                    if (!string.IsNullOrEmpty(output))
-                    {
-                        args2["path"] = output;
-                    }
-                    if (!string.IsNullOrEmpty(page))
-                    {
-                        args2["page"] = page;
-                    }
-                    args2["waitMs"] = waitMs;
-                    args2["holdMs"] = holdMs;
-                    return ForwardCommand(mode, args2, report);
+                    args2["path"] = output;
                 }
-                Guarded(delegate
+                if (!string.IsNullOrEmpty(page))
                 {
-                    TryEnableDpiAwareness();
-                    Application.EnableVisualStyles();
-                    Application.SetCompatibleTextRenderingDefault(false);
-                    Application.Run(new CliContext(mode, output, report, page, waitMs, holdMs));
-                });
-                return 0;
+                    args2["page"] = page;
+                }
+                if (waitMs != 60000)
+                {
+                    args2["timeout"] = waitMs;
+                }
+                args2["holdMs"] = holdMs;
+                if (!EnsureInstanceRunning(240000))
+                {
+                    Console.WriteLine("no tray could be started to measure");
+                    WriteReport(report, new string[] { "error           : no tray could be started" });
+                    return 2;
+                }
+                return ForwardCommand(mode, args2, report);
             }
 
             // 3. Normal start. Exactly one process owns the tray; a second launch asks
@@ -1599,6 +1155,93 @@ namespace RouterMonitorTray
                 GC.KeepAlive(mutex);
             }
             return 0;
+        }
+
+        /// <summary>
+        /// Starts the tray so that it is nobody's child.
+        ///
+        /// Process.Start makes it a child of whoever is measuring, and that is not a
+        /// detail: PowerShell 7's Start-Process -Wait waits for the whole process tree,
+        /// so a diagnostic that spawned the tray would never return, and killing the
+        /// caller could take the tray with it. Win32_Process.Create hands the launch to
+        /// WMI instead, which is also how install-tray.ps1 starts it.
+        /// </summary>
+        internal static bool StartFullyDetached(string exePath)
+        {
+            try
+            {
+                using (ManagementClass factory = new ManagementClass("Win32_Process"))
+                {
+                    ManagementBaseObject arguments = factory.GetMethodParameters("Create");
+                    arguments["CommandLine"] = "\"" + exePath + "\"";
+                    ManagementBaseObject created = factory.InvokeMethod("Create", arguments, null);
+                    uint code = Convert.ToUInt32(created["ReturnValue"]);
+                    created.Dispose();
+                    if (code == 0)
+                    {
+                        return true;
+                    }
+                    PanelForm.LogInit("spawn: Win32_Process.Create returned " + code + "; falling back");
+                }
+            }
+            catch (Exception ex)
+            {
+                PanelForm.LogInit("spawn: " + ex.Message + "; falling back");
+            }
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = exePath;
+                psi.UseShellExecute = true;
+                psi.WorkingDirectory = ServerHost.ProjectRoot;
+                Process.Start(psi);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ReportCrash("could not start a tray: " + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Whether a tray is there *and* its control channel answers. The mutex alone
+        /// is not enough: it can outlive a process that is still starting up.
+        /// </summary>
+        private static bool ChannelAnswers()
+        {
+            ControlResponse response;
+            string error;
+            return ControlClient.TrySend("ping", null, 2000, out response, out error) && response.ok;
+        }
+
+        /// <summary>
+        /// Starts a tray if none is running and waits for its control channel to
+        /// answer. A diagnostic needs a tray; it no longer becomes one.
+        /// </summary>
+        private static bool EnsureInstanceRunning(int timeoutMs)
+        {
+            if (InstanceRunning() && ChannelAnswers())
+            {
+                return true;
+            }
+
+            if (!StartFullyDetached(Application.ExecutablePath))
+            {
+                return false;
+            }
+
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                System.Threading.Thread.Sleep(250);
+                if (ChannelAnswers())
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>

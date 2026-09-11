@@ -232,13 +232,29 @@ place by a pixel-diff tool that scored the panel against browser screenshots.
 
 |  | Hand-drawn (before) | WebView2 (now) |
 | --- | --- | --- |
-| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port, 3,002 / 5 now |
+| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port; 4,212 / 7 now — see "Where the extra lines went" |
 | Compiler | `csc.exe` (.NET Framework) | `csc.exe` — unchanged |
 | Executable | 530 KB | 55 KB (+ WebView2 DLLs) |
 | Fidelity | hand-matched, pixel by pixel | identical by construction |
 | When the web UI changes | re-measure and re-sync by hand | nothing to do |
 
 Across the whole change: **11,201 lines deleted, 547 added.**
+
+#### Where the extra lines went
+
+The port left the tray at 1,592 lines in three files, all of it window chrome and
+WebView plumbing. It is 4,212 lines in seven files now. That is more, and the reason
+is that the tray grew capabilities it did not have: a control channel
+(`ControlChannel.cs`, 373), persisted settings (`Settings.cs`, 184), process sampling
+(`ProcessSampler.cs`, 141), the measurements themselves (`Diagnostics.cs`, 295), and
+the client half of the channel in `Program.cs`.
+
+What did *not* grow is the diagnostic shell. `CliContext` — 460 lines of headless
+driver that shipped inside the executable and duplicated probe/shot/cycle — is gone
+entirely; `Program.cs` went from 1,805 lines to 1,448 while gaining every forwarding
+path above. There is now no diagnostic code outside `Diagnostics.cs`, and no
+`--mode` to add when a capability arrives: it is one row in
+`RegisterControlHandlers()`.
 
 ### Viewport and size
 
@@ -318,8 +334,9 @@ created lazily on the first open. From then on it is **suspended, never destroye
 and the Node server is started on demand and left running. Nothing is torn down when
 the flyout closes, so opening it again never pays a cold start.
 
-Measured by `scripts/verify-tray.ps1` (see `logs/verify/report.txt` and
-`logs/verify/tti.txt`). The tray process is the one `RouterMonitorTray.exe`;
+Measured by `scripts/verify-tray.ps1`, which drives the running tray and **exits
+non-zero when a threshold is missed**; each run appends a dated row with the commit
+to [`docs/tray-evidence.md`](docs/tray-evidence.md). The tray process is the one `RouterMonitorTray.exe`;
 "WebView2" counts only the Chromium processes descended from it, so other
 applications' WebView2 instances are never included.
 
@@ -339,9 +356,18 @@ applications' WebView2 instances are never included.
 | WebView2 while visible | 419–448 MB resident / 368–489 MB committed | 450 MB |
 
 **The reopen and interaction numbers are the ones that matter**, and they are the
-reason this design took the shape it did. Navigation inside the panel is handled by
-the React app itself — the tray adds nothing to the path — so clicking a filter,
-paging the log or switching a page costs the same as it does in a browser tab.
+reason this design took the shape it did: the tray adds nothing to the path, so
+clicking a filter, paging the log or switching a page costs what it costs in a
+browser tab.
+
+One correction to an earlier version of this section. It said navigation inside the
+panel "is handled by the React app itself", i.e. client-side. It is not: the sidebar's
+nav items are plain `<a href>` (`src/components/nav-group.tsx`), not `next/link`, so
+clicking one is a full document load. Measured in Chromium at 1688x935: **one document
+request, 109–117 ms**, which is well inside the budget but is a real reload rather than
+a client-side transition. `npm run test:e2e` asserts that cost so a regression shows
+up, and asserts the route change either way, so switching the sidebar to `next/link`
+later would not break the suite.
 
 Note on the one target that is not met as literally written: "panel visible → first
 screen interactive ≤ 500 ms" holds for the warm reopen (60 ms, because the page is
@@ -428,15 +454,45 @@ fine.
 ### Verification
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1
+powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1     # the gate
+npm run test:e2e                                                     # page only
 ```
 
-One command produces `logs/verify/report.txt` with the rendered viewport and DPR,
-a screenshot of all five pages taken from the real flyout, the cold and warm open
-latencies, whether Chromium accepted the suspend, and process/CPU samples while the
-panel is visible and while it is hidden. It counts only the Chromium processes
-descended from the tray itself, so other applications' WebView2 instances are not
-blamed on this one.
+`verify-tray.ps1` is a gate, not a report. It drives the tray that is **already
+running** — through the control channel — asserts every threshold, and exits non-zero
+when one is missed. Tightening a threshold is how that is checked:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1 -MaxReopenMs 1
+echo $LASTEXITCODE   # 1
+```
+
+| Threshold | Default | What it protects |
+| --- | --- | --- |
+| `-MaxReopenMs` | 200 | warm reopen after a suspend |
+| `-MaxRouteChangeMs` | 500 | clicking a sidebar link |
+| `-MaxHiddenCpuMs` | 20 | CPU per 0.5 s sample while hidden (measured: 0) |
+| `-MinHiddenSamples` | 10 | that the hidden phase was actually sampled |
+| `-MinShotKb` | 20 | that a screenshot is a real capture, not a blank frame |
+
+It also asserts the rendered viewport, that the page is content-ready, that Chromium
+accepted the suspend, and that the browser suite passes. Each run appends a dated row
+with the commit to `docs/tray-evidence.md` — `logs/` is ignored by git, so the summary
+is the part that belongs in the repository.
+
+**The viewport is 1689x936, not 1688x935.** The layout target is 1688x935 CSS pixels,
+but at 85% the window is sized in whole physical pixels and the viewport is that
+divided by the device pixel ratio, so it lands one pixel wide. The gate allows ±1 px
+and records the measured value rather than rounding it away. At 100% (`ZoomFactor`
+1.0) it is exactly 1688x935.
+
+`npm run test:e2e` runs page-level assertions in real Chromium via the installed
+`playwright` library — the `@playwright/test` runner is not a dependency of this
+project and adding one is out of scope, so the runner is a small script with its own
+assertions. It covers route loads, that the tray-only controls are **absent** in a
+browser, sidebar navigation and its cost, the range chip, that the JSON links stay
+self-targeting, that external links stay `target="_blank"`, and that no page raises an
+uncaught error.
 
 `install-tray.ps1` writes the desktop shortcut, drops an autostart shortcut in the
 user's Startup folder (an ONLOGON scheduled task would require elevation) and
@@ -502,6 +558,7 @@ discoverable without reading the source.
 | `probe` | viewport, DPR, page title, document size, WebView2 core, bridge state |
 | `shot` | `args.path` - save the flyout as it appears on screen; `args.page` sends the panel to a dashboard route first |
 | `eval` | `args.script` or `args.file` - run script inside the live flyout |
+| `cycle` | `args.path`, `args.page`, `args.holdMs` - the suspend/reopen measurement |
 | `config` | read the settings, or change one live |
 | `quit` | tear down the way the menu's Quit does |
 
@@ -595,8 +652,13 @@ failure is suppressed.
 
 ### Diagnostics
 
-Evidence modes drive the real flyout and write a report file, because a `winexe`
-has no console of its own:
+`--probe`, `--shot` and `--cycle` are thin clients. They are measurements of the
+tray's own WebView — how long it takes to resume, what its Chromium children cost —
+so they are **asked of a tray** rather than taken by a second process: standing up a
+rival WebView2 on the same user data folder is a documented way to break both of them.
+If no tray is running, one is started (fully detached, via `Win32_Process.Create`) and
+measured. A diagnostic therefore never leaves a temporary process behind, and there is
+no diagnostic code in the executable outside `Diagnostics.cs`.
 
 ```powershell
 dist\tray\RouterMonitorTray.exe --probe --report logs\verify\probe.txt
@@ -604,11 +666,20 @@ dist\tray\RouterMonitorTray.exe --shot  preview\tray\overview.png --page /
 dist\tray\RouterMonitorTray.exe --cycle preview\tray\cycle.png --report logs\verify\cycle.txt --hold 30000
 ```
 
-`--probe` prints the viewport, DPR, page title, WebView2 core version and whether
-the Escape bridge was installed. `--shot` opens the flyout on `--page` and saves it
-as it appears on screen. `--cycle` opens the panel, times an in-panel navigation,
-hides it for `--hold` milliseconds while sampling CPU and memory, reopens it and
-prints the warm resume latency. `--report` writes the same lines to a file.
+`--probe` prints the viewport, DPR, page title, WebView2 core version, the bridge
+protocol version and the last bridge message. `--shot` opens the flyout on `--page`
+and saves it as it appears on screen. `--cycle` opens the panel, times an in-panel
+navigation, hides it for `--hold` milliseconds while sampling CPU and memory, reopens
+it and prints the warm resume latency. `--report` writes the same lines to a file.
+
+Each one is also reachable over the channel as `probe`, `shot` and `cycle`, and that
+is the path they take when a tray is already running. Anything the page itself can be
+asked is available through `--ctl eval`, which is what made the flyout behaviours in
+this section testable:
+
+```powershell
+dist\tray\RouterMonitorTray.exe --ctl eval --arg "script=location.pathname"
+```
 
 `reference/` holds the four browser screenshots the hand-drawn panel was originally
 measured against. They are kept as a record of that work; nothing reads them now.

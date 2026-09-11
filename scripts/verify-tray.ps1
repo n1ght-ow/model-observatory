@@ -1,88 +1,176 @@
 <#
-    One-command evidence run for the WebView2 tray.
+    One-command evidence run for the WebView2 tray, and a gate that can fail.
 
-    Produces logs/verify/report.txt containing, in order:
-      * the CSS viewport / DPR the flyout actually renders at
-      * a screenshot of all five pages taken from the real flyout
-      * the cold first-open latency
-      * the warm reopen latency after a suspend
-      * whether Chromium accepted the suspend
-      * process and CPU samples while the panel is visible and while it is hidden
+    It drives the tray that is already running - through the control channel -
+    rather than starting a second one, and it exits non-zero when a threshold is
+    missed. The thresholds are parameters, so tightening one is how this is tested:
+
+        powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1 -MaxReopenMs 1
+        echo $LASTEXITCODE   # 1
+
+    Produces logs/verify/*.txt (raw) and docs/tray-evidence.md (a dated summary with
+    the commit, which is the part that belongs in the repository).
 
     Usage:  powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1
 #>
 param(
-    [int]$HoldMs = 30000,
-    [switch]$SkipShots
+    [int]$HoldMs = 15000,
+    [int]$MaxReopenMs = 200,
+    [int]$MaxHiddenCpuMs = 20,
+    [int]$MaxRouteChangeMs = 500,
+    [int]$MinHiddenSamples = 10,
+    [int]$MinShotKb = 20,
+    [switch]$SkipShots,
+    [switch]$SkipE2E
 )
 
 $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ProjectRoot = "D:\dashboard"
 $Exe = Join-Path $ProjectRoot "dist\tray\RouterMonitorTray.exe"
-$Report = Join-Path $ProjectRoot "logs\verify\report.txt"
-$ShotDir = Join-Path $ProjectRoot "preview\tray"
 $Scratch = Join-Path $ProjectRoot "logs\verify"
+$ShotDir = Join-Path $ProjectRoot "preview\tray"
+$Report = Join-Path $Scratch "report.txt"
 
 if (-not (Test-Path -LiteralPath $Exe)) {
     throw "Tray executable not found: $Exe (run scripts\build-tray.ps1 first)"
 }
-
 New-Item -ItemType Directory -Path $Scratch -Force | Out-Null
 New-Item -ItemType Directory -Path $ShotDir -Force | Out-Null
 
-# One report per mode, so the interactive-latency figures quoted in the README
-# stay reproducible rather than being overwritten by the next run.
-$ProbeReport = Join-Path $Scratch "tti.txt"
-$CycleReport = Join-Path $Scratch "cycle.txt"
+$log = New-Object System.Collections.Generic.List[string]
+$failures = New-Object System.Collections.Generic.List[string]
 
-$lines = New-Object System.Collections.Generic.List[string]
 function Say([string]$text) {
-    $lines.Add($text)
+    $log.Add($text)
     Write-Host $text
 }
 
-function Run-Exe([string[]]$exeArgs, [int]$timeoutMs) {
-    $p = Start-Process -FilePath $Exe -ArgumentList $exeArgs -PassThru
+function Assert-That([string]$name, [bool]$ok, [string]$detail) {
+    if ($ok) {
+        Say ("  ok    {0,-42} {1}" -f $name, $detail)
+    } else {
+        Say ("  FAIL  {0,-42} {1}" -f $name, $detail)
+        $failures.Add("$name ($detail)")
+    }
+}
+
+# -ArgumentList joins with spaces and does not quote, so an argument containing a
+# space silently becomes two arguments. Quote those.
+function Quote-Arg([string]$value) {
+    if ($value -match "\s") { return '"' + $value + '"' }
+    return $value
+}
+
+function Invoke-Exe([string[]]$exeArgs, [int]$timeoutMs) {
+    $quoted = @($exeArgs | ForEach-Object { Quote-Arg $_ })
+    $p = Start-Process -FilePath $Exe -ArgumentList $quoted -PassThru
     $p.WaitForExit($timeoutMs) | Out-Null
     if (-not $p.HasExited) {
-        Stop-Process -Id $p.Id -Force
-        return $false
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        return @{ code = -1; lines = @() }
     }
-    return $true
+    $content = @()
+    $reportPath = $null
+    for ($i = 0; $i -lt $exeArgs.Count - 1; $i++) {
+        if ($exeArgs[$i] -eq "--report") { $reportPath = $exeArgs[$i + 1] }
+    }
+    if ($reportPath -and (Test-Path -LiteralPath $reportPath)) {
+        $content = @(Get-Content -LiteralPath $reportPath)
+    }
+    return @{ code = $p.ExitCode; lines = $content }
 }
 
+function Invoke-Ctl([string]$cmd, [string[]]$extra) {
+    # --report is how the answer comes back: without it the reply only reaches the
+    # attached console, and a script sees an empty result.
+    $reportPath = Join-Path $Scratch ("ctl-" + $cmd + ".txt")
+    Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
+    $ctrlArgs = @("--ctl", $cmd)
+    if ($extra) { $ctrlArgs += $extra }
+    $ctrlArgs += @("--report", $reportPath)
+    return Invoke-Exe $ctrlArgs 120000
+}
+
+function Read-Field([string[]]$lines, [string]$label) {
+    $pattern = "^" + [regex]::Escape($label) + "\s*:\s*(.*)$"
+    foreach ($line in $lines) {
+        if ($line -match $pattern) { return $Matches[1].Trim() }
+    }
+    return $null
+}
+
+function Median-Of([double[]]$values) {
+    if ($values.Count -eq 0) { return 0 }
+    $sorted = @($values | Sort-Object)
+    return $sorted[[int][math]::Floor($sorted.Count / 2)]
+}
+
+function Metric-Values([string[]]$lines, [string]$phase, [string]$metric) {
+    $pattern = "^sample\s+" + $phase + "\s+.*" + $metric + "=\s*([0-9.]+)"
+    $values = @()
+    foreach ($line in $lines) {
+        if ($line -match $pattern) { $values += [double]$Matches[1] }
+    }
+    return $values
+}
+
+# ---------------------------------------------------------------- 0. environment
 Say "=== Router Monitor tray verification ==="
 Say ("date            : " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
-Say ("executable      : " + $Exe)
-Say ("executable size : " + ("{0:N1} KB" -f ((Get-Item -LiteralPath $Exe).Length / 1KB)))
+Say ("executable      : " + $Exe + "  (" + ("{0:N1} KB" -f ((Get-Item -LiteralPath $Exe).Length / 1KB)) + ")")
+$commit = (& git -C $ProjectRoot rev-parse --short HEAD 2>$null)
+if (-not $commit) { $commit = "(unknown)" }
+$dirty = (& git -C $ProjectRoot status --porcelain 2>$null)
+Say ("commit          : " + $commit + $(if ($dirty) { " + uncommitted changes" } else { "" }))
 
-# ---------------------------------------------------------------- 0. clean slate
-Get-Process -Name RouterMonitorTray -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Milliseconds 700
-
-# ---------------------------------------------------------------- 1. server
-$listening = Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue
+# ---------------------------------------------------------------- 1. the tray
 Say ""
-Say "--- local server ---"
-Say ("port 3000       : " + $(if ($listening) { "listening (pid " + $listening[0].OwningProcess + ")" } else { "not running - the tray will start it" }))
+Say "--- tray ---"
+$ping = Invoke-Ctl "ping"
+$trayPid = Read-Field $ping.lines "pid"
+Assert-That "tray answers the control channel" ($ping.code -eq 0 -and $trayPid) "pid $trayPid"
+Assert-That "local server is serving" ((Read-Field $ping.lines "server serving") -eq "yes") "$(Read-Field $ping.lines 'server serving')"
 
-# ---------------------------------------------------------------- 2. probe
+# ---------------------------------------------------------------- 2. render probe
 Say ""
-Say "--- render probe (viewport, DPR, WebView2 core, time to interactive) ---"
-Remove-Item -LiteralPath $ProbeReport -Force -ErrorAction SilentlyContinue
-Run-Exe @("--probe", "--report", $ProbeReport) 180000 | Out-Null
-if (Test-Path -LiteralPath $ProbeReport) {
-    foreach ($line in (Get-Content -LiteralPath $ProbeReport)) { Say ("  " + $line) }
-} else {
-    Say "  probe produced no report"
+Say "--- render probe ---"
+$probeReport = Join-Path $Scratch "probe.txt"
+Remove-Item -LiteralPath $probeReport -Force -ErrorAction SilentlyContinue
+Invoke-Ctl "show" | Out-Null
+Start-Sleep -Milliseconds 2500
+$probe = Invoke-Exe @("--probe", "--report", $probeReport) 180000
+Assert-That "--probe exits 0" ($probe.code -eq 0) "exit $($probe.code)"
+foreach ($line in $probe.lines) { Say ("  " + $line) }
+
+# The layout is pinned to 1688x935 CSS pixels. At 85% the window is sized in whole
+# physical pixels and the viewport is that divided by the device pixel ratio, so it
+# lands one pixel wide of the target - which is why this is a tolerance and not an
+# equality, and why the measured value is recorded rather than rounded away.
+$viewport = Read-Field $probe.lines "css viewport"
+$viewportOk = $false
+if ($viewport -match "^(\d+)x(\d+)$") {
+    $vw = [int]$Matches[1]
+    $vh = [int]$Matches[2]
+    $viewportOk = ([math]::Abs($vw - 1688) -le 1) -and ([math]::Abs($vh - 935) -le 1)
 }
+Assert-That "CSS viewport is 1688x935 (within 1 px)" $viewportOk "$viewport"
+$dpr = Read-Field $probe.lines "device pixel r"
+$dprValue = 0.0
+if ($dpr -match "^([0-9.]+)") { $dprValue = [double]$Matches[1] }
+Assert-That "device pixel ratio is positive" ($dprValue -gt 0) "$dpr"
+$bridge = Read-Field $probe.lines "escape bridge"
+Assert-That "escape bridge is protocol v1" ($bridge -eq "v1") "$bridge"
+Assert-That "content is ready" ((Read-Field $probe.lines "content ready") -eq "yes") "$(Read-Field $probe.lines 'content ready')"
+Assert-That "webview did not fail" ((Read-Field $probe.lines "webview failed") -eq "no") "$(Read-Field $probe.lines 'webview failed')"
+Assert-That "panel is visible" ((Read-Field $probe.lines "panel visible") -eq "yes") "$(Read-Field $probe.lines 'panel visible')"
 
 # ---------------------------------------------------------------- 3. screenshots
+Say ""
+Say "--- flyout screenshots ---"
 if (-not $SkipShots) {
-    Say ""
-    Say "--- flyout screenshots (one process per page) ---"
     $pages = @(
         @{ name = "overview";     route = "/" },
         @{ name = "requests";     route = "/requests" },
@@ -95,66 +183,111 @@ if (-not $SkipShots) {
         $rep = Join-Path $Scratch ("shot-" + $page.name + ".txt")
         Remove-Item -LiteralPath $shot -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $rep -Force -ErrorAction SilentlyContinue
-        Run-Exe @("--shot", $shot, "--page", $page.route, "--report", $rep) 180000 | Out-Null
-        $ready = "?"
-        if (Test-Path -LiteralPath $rep) {
-            $hit = Select-String -LiteralPath $rep -Pattern "first content" -ErrorAction SilentlyContinue
-            if ($hit) { $ready = ($hit.Line -split ":")[1].Trim() }
-        }
-        $size = "missing"
-        if (Test-Path -LiteralPath $shot) {
-            $size = "{0:N1} KB" -f ((Get-Item -LiteralPath $shot).Length / 1KB)
-        }
-        Say ("  {0,-14} {1,-6} -> {2}  (first content {3})" -f $page.name, $page.route, $size, $ready)
+        $result = Invoke-Exe @("--shot", $shot, "--page", $page.route, "--report", $rep) 180000
+        $kb = 0
+        if (Test-Path -LiteralPath $shot) { $kb = [math]::Round((Get-Item -LiteralPath $shot).Length / 1KB, 1) }
+        Assert-That ("shot " + $page.name) ($result.code -eq 0 -and $kb -ge $MinShotKb) "$kb KB on $($page.route)"
     }
+} else {
+    Say "  skipped"
 }
 
-# ---------------------------------------------------------------- 4. suspend + CPU
+# ---------------------------------------------------------------- 4. cycle + CPU
 Say ""
 Say "--- suspend / warm reopen / interaction / idle CPU ---"
 $cycleShot = Join-Path $ShotDir "cycle.png"
-Remove-Item -LiteralPath $CycleReport -Force -ErrorAction SilentlyContinue
-Run-Exe @("--cycle", $cycleShot, "--report", $CycleReport, "--hold", "$HoldMs") 300000 | Out-Null
-
-if (Test-Path -LiteralPath $CycleReport) {
-    $content = Get-Content -LiteralPath $CycleReport
-    foreach ($line in $content) {
-        if ($line -notlike "sample *") { Say ("  " + $line) }
-    }
-
-    $visible = @($content | Where-Object { $_ -like "sample visible*" })
-    $hidden = @($content | Where-Object { $_ -like "sample hidden*" })
-
-    function Median-Metric($rows, [string]$pattern) {
-        if ($rows.Count -eq 0) { return 0 }
-        $values = @()
-        foreach ($row in $rows) {
-            if ($row -match $pattern) { $values += [double]$Matches[1] }
-        }
-        if ($values.Count -eq 0) { return 0 }
-        $sorted = @($values | Sort-Object)
-        return $sorted[[int]([math]::Floor($sorted.Count / 2))]
-    }
-
-    Say ""
-    Say "  --- derived (median of samples) ---"
-    Say ("  hidden samples     : " + $hidden.Count)
-    Say ("  visible CPU / 0.5s : " + (Median-Metric $visible "wv2CpuDelta=\s*([0-9]+)ms") + " ms")
-    Say ("  hidden  CPU / 0.5s : " + (Median-Metric $hidden  "wv2CpuDelta=\s*([0-9]+)ms") + " ms")
-    Say ("  visible working set: " + (Median-Metric $visible "wv2Mem=\s*([0-9.]+)MB") + " MB  (resident)")
-    Say ("  hidden  working set: " + (Median-Metric $hidden  "wv2Mem=\s*([0-9.]+)MB") + " MB  (Windows trims a suspended process)")
-    Say ("  hidden  committed  : " + (Median-Metric $hidden  "wv2Committed=\s*([0-9.]+)MB") + " MB  (still committed while suspended)")
-    Say ("  tray    working set: " + (Median-Metric $hidden  "trayMem=\s*([0-9.]+)MB") + " MB")
-    Say ""
-    Say "  --- raw samples ---"
-    foreach ($line in $content) {
-        if ($line -like "sample *") { Say ("  " + $line) }
-    }
-} else {
-    Say "  cycle produced no report"
+$cycleReport = Join-Path $Scratch "cycle.txt"
+Remove-Item -LiteralPath $cycleReport -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $cycleShot -Force -ErrorAction SilentlyContinue
+$cycle = Invoke-Exe @("--cycle", $cycleShot, "--report", $cycleReport, "--hold", "$HoldMs") 300000
+Assert-That "--cycle exits 0" ($cycle.code -eq 0) "exit $($cycle.code)"
+foreach ($line in $cycle.lines) {
+    if ($line -notlike "sample *") { Say ("  " + $line) }
 }
 
-Write-Output ""
-$lines | Set-Content -LiteralPath $Report -Encoding UTF8
+$suspendHidden = Read-Field $cycle.lines "suspend hidden"
+Assert-That "Chromium accepted the suspend" ($suspendHidden -eq "suspended") "$suspendHidden"
+
+$reopenRaw = Read-Field $cycle.lines "reopen latency"
+$reopenMs = 0
+if ($reopenRaw -match "^(\d+)") { $reopenMs = [int]$Matches[1] }
+Assert-That "warm reopen within budget" ($reopenMs -gt 0 -and $reopenMs -le $MaxReopenMs) "$reopenMs ms (budget $MaxReopenMs)"
+
+$routeRaw = Read-Field $cycle.lines "route change"
+$routeMs = 0
+if ($routeRaw -match "after\s+(\d+)\s*ms") { $routeMs = [int]$Matches[1] }
+Assert-That "route change within budget" ($routeMs -gt 0 -and $routeMs -le $MaxRouteChangeMs) "$routeMs ms (budget $MaxRouteChangeMs)"
+
+$hiddenCpu = Metric-Values $cycle.lines "hidden" "wv2CpuDelta"
+$visibleCpu = Metric-Values $cycle.lines "visible" "wv2CpuDelta"
+$hiddenMem = Metric-Values $cycle.lines "hidden" "wv2Mem"
+Assert-That "enough hidden samples" ($hiddenCpu.Count -ge $MinHiddenSamples) "$($hiddenCpu.Count) samples"
+$hiddenMedian = Median-Of $hiddenCpu
+Assert-That "hidden CPU median within budget" ($hiddenMedian -le $MaxHiddenCpuMs) "$hiddenMedian ms per 0.5s (budget $MaxHiddenCpuMs)"
+
+Say ""
+Say "  --- derived (median of samples) ---"
+Say ("  visible CPU / 0.5s : " + (Median-Of $visibleCpu) + " ms")
+Say ("  hidden  CPU / 0.5s : " + $hiddenMedian + " ms")
+Say ("  hidden  working set: " + (Median-Of $hiddenMem) + " MB  (Windows trims a suspended process)")
+
+# ---------------------------------------------------------------- 5. page behaviour
+Say ""
+Say "--- page behaviour in a real browser ---"
+$e2eCode = 0
+if (-not $SkipE2E) {
+    Push-Location $ProjectRoot
+    try {
+        $e2e = & npm run test:e2e 2>&1
+        $e2eCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    foreach ($line in $e2e) {
+        if ("$line" -match "^\s+(ok|FAIL)\s" -or "$line" -match "^\d+/\d+ passed") { Say ("  " + "$line".TrimEnd()) }
+    }
+    Assert-That "browser suite passes" ($e2eCode -eq 0) "npm run test:e2e exit $e2eCode"
+} else {
+    Say "  skipped"
+}
+
+# ---------------------------------------------------------------- 6. verdict
+Say ""
+$passed = ($failures.Count -eq 0)
+if ($passed) {
+    Say "RESULT: pass"
+} else {
+    Say ("RESULT: fail - " + $failures.Count + " assertion(s)")
+    foreach ($failure in $failures) { Say ("  - " + $failure) }
+}
+
+$log | Set-Content -LiteralPath $Report -Encoding UTF8
+
+# The dated summary is the part that belongs in the repository: logs/ is ignored.
+$evidenceDir = Join-Path $ProjectRoot "docs"
+New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+$evidence = Join-Path $evidenceDir "tray-evidence.md"
+$result = $(if ($passed) { "pass" } else { "FAIL" })
+$summary = New-Object System.Collections.Generic.List[string]
+$summary.Add("# Tray evidence")
+$summary.Add("")
+$summary.Add("Generated by scripts/verify-tray.ps1. Regenerate with:")
+$summary.Add("")
+$summary.Add("    powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1")
+$summary.Add("")
+$summary.Add("| Run | Commit | Reopen | Route change | Hidden CPU / 0.5s | Hidden samples | Viewport | DPR | Result |")
+$summary.Add("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+$row = "| " + (Get-Date -Format "yyyy-MM-dd HH:mm") + " | " + $commit + " | " + $reopenMs + " ms | " + $routeMs + " ms | " + $hiddenMedian + " ms | " + $hiddenCpu.Count + " | " + $viewport + " | " + $dpr + " | " + $result + " |"
+$summary.Add($row)
+$summary.Add("")
+$summary.Add("Thresholds: reopen <= $MaxReopenMs ms, route change <= $MaxRouteChangeMs ms, hidden CPU median <= $MaxHiddenCpuMs ms per 0.5 s sample.")
+$summary.Add("Raw report: logs/verify/report.txt (ignored by git).")
+$summary | Set-Content -LiteralPath $evidence -Encoding UTF8
+
 Write-Host ""
-Write-Host "report written to $Report"
+Write-Host "report   : $Report"
+Write-Host "evidence : $evidence"
+Write-Host "result   : $result"
+
+exit $(if ($passed) { 0 } else { 1 })
+
