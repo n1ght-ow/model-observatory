@@ -687,9 +687,10 @@ namespace RouterMonitorTray
         private ControlResponse HandleProbe(ControlRequest request)
         {
             int timeout = ArgInt(request, "timeout", 60000);
+            string page = ArgString(request, "page", null);
             return Complete(OnUiAsync(delegate
             {
-                return Diagnostics.ProbeAsync(panel, null, timeout);
+                return Diagnostics.ProbeAsync(panel, null, page, timeout);
             }), timeout + 30000, request.id);
         }
 
@@ -701,9 +702,10 @@ namespace RouterMonitorTray
                 return ControlResponse.Failure(request.id, "shot needs a 'path' argument");
             }
             int timeout = ArgInt(request, "timeout", 60000);
+            string page = ArgString(request, "page", null);
             return Complete(OnUiAsync(delegate
             {
-                return Diagnostics.ShotAsync(panel, path, timeout);
+                return Diagnostics.ShotAsync(panel, path, page, timeout);
             }), timeout + 30000, request.id);
         }
 

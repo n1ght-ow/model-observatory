@@ -500,7 +500,7 @@ discoverable without reading the source.
 | `show` / `hide` / `toggle` | open, close or flip the flyout |
 | `reload` | reload the page in place |
 | `probe` | viewport, DPR, page title, document size, WebView2 core, bridge state |
-| `shot` | `args.path` - save the flyout as it appears on screen |
+| `shot` | `args.path` - save the flyout as it appears on screen; `args.page` sends the panel to a dashboard route first |
 | `eval` | `args.script` or `args.file` - run script inside the live flyout |
 | `config` | read the settings, or change one live |
 | `quit` | tear down the way the menu's Quit does |
@@ -523,7 +523,8 @@ Two consequences worth knowing:
 - **A second launch no longer dies without a word.** It asks the running tray to
   show the panel and exits 0; with no tray running it starts one.
 - **The diagnostics prefer the tray that is already running.** `--probe` and
-  `--shot` are forwarded over the channel whenever an instance answers, because
+  `--shot` (including their `--page` route) are forwarded over the channel
+  whenever an instance answers, because
   standing up a second WebView2 on the same user data folder is a documented way
   to break both of them. `--cycle` still measures itself in its own process: it
   drives the panel through a visible/hidden/reopen sequence, and it moves onto

@@ -24,10 +24,19 @@ namespace RouterMonitorTray
         /// to have this method open the panel and time it.
         /// </summary>
         public static async Task<Dictionary<string, object>> ProbeAsync(
-            PanelForm panel, string firstContent, int contentTimeoutMs)
+            PanelForm panel, string firstContent, string page, int contentTimeoutMs)
         {
             List<string> lines = new List<string>();
             Dictionary<string, object> fields = new Dictionary<string, object>();
+
+            if (!string.IsNullOrEmpty(page))
+            {
+                panel.ShowPanel();
+                await panel.WaitForContentAsync(contentTimeoutMs);
+                panel.NavigateTo(page);
+                await Task.Delay(1200);
+                await panel.WaitForContentAsync(contentTimeoutMs);
+            }
 
             if (firstContent == null)
             {
@@ -66,7 +75,7 @@ namespace RouterMonitorTray
 
         /// <summary>Saves the flyout exactly as it appears on screen.</summary>
         public static async Task<Dictionary<string, object>> ShotAsync(
-            PanelForm panel, string path, int contentTimeoutMs)
+            PanelForm panel, string path, string page, int contentTimeoutMs)
         {
             List<string> lines = new List<string>();
             Dictionary<string, object> fields = new Dictionary<string, object>();
@@ -78,6 +87,12 @@ namespace RouterMonitorTray
 
             panel.ShowPanel();
             await panel.WaitForContentAsync(contentTimeoutMs);
+            if (!string.IsNullOrEmpty(page))
+            {
+                panel.NavigateTo(page);
+                await Task.Delay(1200);
+                await panel.WaitForContentAsync(contentTimeoutMs);
+            }
             // Let the compositor settle so a capture is never a half-painted frame.
             await Task.Delay(700);
             panel.CaptureTo(path);

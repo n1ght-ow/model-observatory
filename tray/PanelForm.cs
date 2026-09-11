@@ -765,6 +765,32 @@ namespace RouterMonitorTray
         }
 
         /// <summary>
+        /// Sends the panel to a dashboard route. Only same-dashboard pages are
+        /// accepted, so this cannot be used to point the flyout somewhere else.
+        /// </summary>
+        public void NavigateTo(string route)
+        {
+            if (string.IsNullOrEmpty(route) || !webViewReady)
+            {
+                return;
+            }
+            string target = ServerHost.BaseUrl + (route.StartsWith("/") ? route : "/" + route);
+            if (!IsDashboard(target))
+            {
+                LogInit("navigate: refused " + Truncate(target));
+                return;
+            }
+            try
+            {
+                webView.CoreWebView2.Navigate(target);
+            }
+            catch (Exception ex)
+            {
+                LogInit("navigate: " + ex.Message);
+            }
+        }
+
+        /// <summary>
         /// Reloads the dashboard route the panel is on. Deliberately not
         /// CoreWebView2.Reload(), which reloads the *current* URL - if the panel had
         /// somehow ended up on an API response, that reloaded the API response and
