@@ -32,6 +32,11 @@ if (-not (Test-Path -LiteralPath $Exe)) {
 New-Item -ItemType Directory -Path $Scratch -Force | Out-Null
 New-Item -ItemType Directory -Path $ShotDir -Force | Out-Null
 
+# One report per mode, so the interactive-latency figures quoted in the README
+# stay reproducible rather than being overwritten by the next run.
+$ProbeReport = Join-Path $Scratch "tti.txt"
+$CycleReport = Join-Path $Scratch "cycle.txt"
+
 $lines = New-Object System.Collections.Generic.List[string]
 function Say([string]$text) {
     $lines.Add($text)
@@ -65,12 +70,11 @@ Say ("port 3000       : " + $(if ($listening) { "listening (pid " + $listening[0
 
 # ---------------------------------------------------------------- 2. probe
 Say ""
-Say "--- render probe (viewport, DPR, WebView2 core) ---"
-$probeReport = Join-Path $Scratch "probe.txt"
-Remove-Item -LiteralPath $probeReport -Force -ErrorAction SilentlyContinue
-Run-Exe @("--probe", "--report", $probeReport) 180000 | Out-Null
-if (Test-Path -LiteralPath $probeReport) {
-    foreach ($line in (Get-Content -LiteralPath $probeReport)) { Say ("  " + $line) }
+Say "--- render probe (viewport, DPR, WebView2 core, time to interactive) ---"
+Remove-Item -LiteralPath $ProbeReport -Force -ErrorAction SilentlyContinue
+Run-Exe @("--probe", "--report", $ProbeReport) 180000 | Out-Null
+if (Test-Path -LiteralPath $ProbeReport) {
+    foreach ($line in (Get-Content -LiteralPath $ProbeReport)) { Say ("  " + $line) }
 } else {
     Say "  probe produced no report"
 }
@@ -107,14 +111,13 @@ if (-not $SkipShots) {
 
 # ---------------------------------------------------------------- 4. suspend + CPU
 Say ""
-Say "--- suspend / warm reopen / idle CPU ---"
-$cycleReport = Join-Path $Scratch "cycle.txt"
+Say "--- suspend / warm reopen / interaction / idle CPU ---"
 $cycleShot = Join-Path $ShotDir "cycle.png"
-Remove-Item -LiteralPath $cycleReport -Force -ErrorAction SilentlyContinue
-Run-Exe @("--cycle", $cycleShot, "--report", $cycleReport, "--hold", "$HoldMs") 300000 | Out-Null
+Remove-Item -LiteralPath $CycleReport -Force -ErrorAction SilentlyContinue
+Run-Exe @("--cycle", $cycleShot, "--report", $CycleReport, "--hold", "$HoldMs") 300000 | Out-Null
 
-if (Test-Path -LiteralPath $cycleReport) {
-    $content = Get-Content -LiteralPath $cycleReport
+if (Test-Path -LiteralPath $CycleReport) {
+    $content = Get-Content -LiteralPath $CycleReport
     foreach ($line in $content) {
         if ($line -notlike "sample *") { Say ("  " + $line) }
     }

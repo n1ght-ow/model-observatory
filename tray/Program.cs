@@ -339,6 +339,39 @@ namespace RouterMonitorTray
             {
                 reported = true;
                 Say("first content   : " + clock.ElapsedMilliseconds + " ms");
+
+                // Navigation completing is not the same as being usable: measure
+                // how long the React tree takes to actually render and hydrate.
+                // Only meaningful in probe mode, which stays on the Overview page;
+                // the cycle mode navigates to Requests, which has no charts.
+                if (mode != "probe")
+                {
+                    return;
+                }
+                long start = clock.ElapsedMilliseconds;
+                string marker = "";
+                while (clock.ElapsedMilliseconds - start < 20000)
+                {
+                    Application.DoEvents();
+                    Thread.Sleep(10);
+                    marker = Eval("(function(){var svg=document.querySelectorAll('svg.recharts-surface');" +
+                        "var main=document.querySelector('main');" +
+                        "if(!main){return '';}" +
+                        "return String(svg.length)+'|'+String(document.querySelectorAll('button').length)+'|'+" +
+                        "String(!!(window.next&&window.next.router));})()");
+                    if (marker.Length > 0)
+                    {
+                        string[] parts = marker.Split('|');
+                        int charts;
+                        int buttons;
+                        if (parts.Length == 3 && int.TryParse(parts[0], out charts) && int.TryParse(parts[1], out buttons)
+                            && charts > 0 && buttons > 5)
+                        {
+                            break;
+                        }
+                    }
+                }
+                Say("hydrated        : " + (clock.ElapsedMilliseconds - start) + " ms after first content (charts=" + marker + ")");
             }
 
             if (done)
@@ -468,13 +501,22 @@ namespace RouterMonitorTray
             panel.ShowPanel();
             Application.DoEvents();
 
-            while (!panel.IsContentReady && clock.ElapsedMilliseconds - reopenedAtMs < 30000)
+            // Honest warm-reopen measure: round-trip a script into the resumed
+            // renderer, which only answers once Chromium is actually running again.
+            string alive = "(no reply)";
+            while (clock.ElapsedMilliseconds - reopenedAtMs < 30000)
             {
                 Application.DoEvents();
-                Thread.Sleep(5);
+                alive = Eval("String(document.querySelectorAll('svg.recharts-surface').length)");
+                if (alive != "(timeout)" && alive != "(null)")
+                {
+                    break;
+                }
+                Thread.Sleep(10);
             }
             long reopenMs = clock.ElapsedMilliseconds - reopenedAtMs;
-            Say("reopen latency  : " + reopenMs + " ms");
+            Say("reopen latency  : " + reopenMs + " ms (script round-trip into the resumed renderer)");
+            Say("reopen charts   : " + alive);
             Say("suspend after   : " + panel.SuspendState);
             Sample("reopened");
 
