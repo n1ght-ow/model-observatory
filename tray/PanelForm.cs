@@ -486,8 +486,11 @@ namespace RouterMonitorTray
             bool serving = await ServerHost.EnsureAsync(240000, SetStatus).ConfigureAwait(true);
             if (!serving)
             {
-                SetStatus(@"本地服务启动失败，请检查 logs\dashboard.log");
+                // Not sticky: the host may still be building, so opening the panel
+                // again retries instead of staying dead until a restart.
+                initStarted = false;
                 webViewFailed = true;
+                SetStatus(@"本地服务启动失败，请检查 logs\dashboard.log");
                 return;
             }
 
@@ -495,11 +498,14 @@ namespace RouterMonitorTray
             bool ok = await InitWebViewAsync().ConfigureAwait(true);
             if (!ok)
             {
+                // Also not sticky. A profile lock left behind by a force-killed
+                // previous run, or an Edge update in progress, must not brick the
+                // flyout for the rest of the session.
+                initStarted = false;
                 webViewFailed = true;
-                if (loading.Text == "正在加载页面…")
-                {
-                    SetStatus("无法初始化 WebView2，请确认已安装 WebView2 Runtime");
-                }
+                SetStatus("无法初始化 WebView2，正在重试…（详情见 logs\tray-init.log）");
+                await Task.Delay(2500).ConfigureAwait(true);
+                StartInit();
             }
         }
 
@@ -515,10 +521,13 @@ namespace RouterMonitorTray
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     @"RouterMonitorTray\WebView2");
                 Directory.CreateDirectory(userData);
+                LogInit("CreateAsync userData=" + userData);
 
                 CoreWebView2Environment environment =
                     await CoreWebView2Environment.CreateAsync(null, userData, null).ConfigureAwait(true);
+                LogInit("CreateAsync ok, browser=" + environment.BrowserVersionString);
                 await webView.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
+                LogInit("EnsureCoreWebView2Async ok");
 
                 CoreWebView2 core = webView.CoreWebView2;
                 core.Settings.AreDefaultContextMenusEnabled = false;
@@ -539,11 +548,28 @@ namespace RouterMonitorTray
                 webView.ZoomFactor = webZoom;
                 webViewReady = true;
                 core.Navigate(ServerHost.BaseUrl + startPage);
+                LogInit("navigated to " + ServerHost.BaseUrl + startPage);
                 return true;
+            }
+            catch (Exception ex)
+            {
+                LogInit("FAILED: " + ex);
+                return false;
+            }
+        }
+
+        /// <summary>Appends a line to logs\tray-init.log; never throws.</summary>
+        internal static void LogInit(string message)
+        {
+            try
+            {
+                string dir = Path.Combine(ServerHost.ProjectRoot, "logs");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "tray-init.log"),
+                    DateTime.Now.ToString("s") + "  " + message + Environment.NewLine);
             }
             catch
             {
-                return false;
             }
         }
 
