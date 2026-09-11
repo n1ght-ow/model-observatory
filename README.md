@@ -97,12 +97,46 @@ following DSH's own container format — and feeds two places:
   metrics as the CC Switch rows, so that page is the whole machine's native
   `api.deepseek.com` traffic. The harness never goes through the Codex Router,
   so the two halves never describe the same request and nothing is double
-  counted. Merged rows are tagged `DeepSeek API · Harness` in the API column so
-  they stay distinguishable and filterable.
+  counted. Both halves are labelled `DeepSeek` in the API column, so a model used
+  through both the CLI and the harness shows as **one row** rather than two.
 - the **DeepSeek Harness** tab on `/`, `/requests` and `/models` (source id
-  `harness`) lists every upstream the harness used — `command-code`,
-  `deepseek-official`, `opencode-go`, `b-ai` — because the other tabs cannot
+  `harness`) lists every upstream the harness used, because the other tabs cannot
   show harness traffic at all.
+
+### One name per upstream
+
+The readers spell the same upstream differently — the router writes `commandcode`,
+DSH writes `command-code`, CC Switch rows are labelled by whichever page read them.
+That was not cosmetic: models are grouped by `provider::model`, so two spellings of
+one upstream produced two rows for one model on one upstream. `deepseek-flash` was
+listed twice — 188 rows from the Codex log and 139 harness turns, both native
+`api.deepseek.com` — and never merged.
+
+`src/lib/metrics/provider.ts` is now the one place that decides what an upstream is
+called:
+
+| Written by the readers | Shown as |
+| --- | --- |
+| `deepseek`, `deepseek-official`, `DeepSeek API`, `DeepSeek API · Harness` | `DeepSeek` |
+| `commandcode`, `command-code` | `Command Code` |
+| anything else | its own name, unchanged |
+
+Names that are not aliases are **not** folded into an "other" bucket: a bucket hides
+which upstream it was, and recognition is the point. So `b-ai`, `opencode-go` and
+`openai` keep their names.
+
+`custom` is deliberately absent from the table, because the name means two different
+things: the Codex provider called `custom` points at `api.apikey.fun` while the
+router's `custom` is a routing target with no host evidence. A name-keyed table cannot
+tell those apart, so a Codex row is named by **its session** instead — sessions on
+`api.deepseek.com` are `DeepSeek`, sessions that went through the router are already
+counted by the router log, and the rest are named by the host their provider points at,
+read from this machine's `~/.codex/config.toml`. A row whose rollout file is gone is
+labelled `unknown` rather than guessed at — currently three rows.
+
+The **routed** rows now name where they went rather than the client that sent them.
+Labelling them all `Codex Router` is what previously hid the fact that most of them
+went to Command Code.
 
 DSH reports `inputTokens` as the *uncached* prompt and lists the cached part
 separately, unlike CC Switch where the input count already contains it; the
@@ -143,7 +177,7 @@ The active source is detected from the current CC Switch Codex profile
 API). You can switch sources manually on `/`, `/requests` and `/models` —
 including **DeepSeek Harness**, the third tab, which is not profile-backed: it
 reads `~/.dsh/sessions` and lists every turn the harness itself sent upstream,
-with `provider` as the API column (`command-code`, `deepseek-official`, …).
+with `provider` as the API column, under the same names as everywhere else.
 Because it is session data it also becomes visible immediately — the log
 updates while a turn is still running.
 
@@ -170,7 +204,7 @@ So All splits ownership **by reader**, which makes the three parts disjoint:
 
 | Owner | Holds | Why |
 | --- | --- | --- |
-| router log | everything through the router | it saw the request and knows the final upstream |
+| router log | everything through the router | it saw the request and knows the final upstream, which is what the API column shows |
 | harness log | every DSH turn | DSH talks to upstreams directly, so nothing else sees it |
 | CC Switch | Codex rows the router never saw | includes the non-DeepSeek models no tab can show |
 

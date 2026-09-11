@@ -11,6 +11,7 @@ import {
 	readDshUsageEvents,
 	toDshRequestRecords,
 } from "@/lib/dsh/session-usage";
+import { providerLabel } from "@/lib/metrics/provider";
 import type { MetricSource } from "@/lib/metrics/source";
 import {
 	calendarDaysBetween,
@@ -48,7 +49,14 @@ async function getHarnessSnapshot(
 ): Promise<MetricsSnapshot> {
 	const events = await readDshUsageEvents();
 	const rows = toDshRequestRecords(events);
-	const scopedRows = filterRequests(rows, options.filters ?? {});
+	// DSH writes the upstream it used into every turn (\`deepseek-official\`,
+	// \`command-code\`, …), so this reader is already telling the truth; it just spells
+	// some of them differently to the router.
+	const labelled = rows.map((row) => ({
+		...row,
+		provider: providerLabel(row.provider),
+	}));
+	const scopedRows = filterRequests(labelled, options.filters ?? {});
 	const requestedWindowDays = options.windowDays ?? 7;
 	const allTime =
 		!Number.isFinite(requestedWindowDays) || requestedWindowDays <= 0;

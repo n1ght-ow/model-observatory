@@ -35,6 +35,15 @@ export type CodexSessionIndex = {
 	providers: Map<string, string>;
 	/** Provider names whose base URL is api.deepseek.com. */
 	nativeProviders: Set<string>;
+	/**
+	 * Provider name → hostname from ~/.codex/config.toml.
+	 *
+	 * Used to name the upstream of a session that is neither DeepSeek nor the router,
+	 * so the table can say "api.apikey.fun" instead of a hardcoded guess. Read from the
+	 * machine's own config, so it follows the user if they point the provider somewhere
+	 * else.
+	 */
+	providerHosts: Map<string, string>;
 	/** Session id → upstream classification. */
 	upstreams: Map<string, CodexUpstream>;
 	/** Session ids whose rows belong on the native DeepSeek page. */
@@ -101,6 +110,15 @@ function parseProviderBaseUrls(toml: string): Map<string, string> {
 		}
 	}
 	return urls;
+}
+
+/** The hostname of a base URL, or null when it cannot be parsed. */
+function hostOf(url: string): string | null {
+	try {
+		return new URL(url).hostname || null;
+	} catch {
+		return null;
+	}
 }
 
 function isDeepSeekHost(url: string): boolean {
@@ -226,12 +244,26 @@ function classify(
 	rows: readonly CodexRow[],
 	providers: Map<string, string>,
 	nativeProviders: Set<string>,
+	providerHosts: Map<string, string>,
 	routerEvents: RouterEvent[]
 ): CodexSessionIndex {
 	const nativeSessionIds = new Set<string>();
-	const routerSessionIds = new Set<string>();
 	const upstreams = new Map<string, CodexUpstream>();
 	const routerIndex = buildRouterIndex(routerEvents);
+
+	// Which sessions went through the router is a property of the rollout header alone,
+	// so it is answered from the complete provider map rather than from `rows`.
+	//
+	// Deriving it from `rows` made the answer depend on who asked: the index is cached,
+	// and /deepseek only passes DeepSeek-named rows, so an index built there was missing
+	// every router session whose model was not DeepSeek. A later caller merging all rows
+	// would then fail to recognise those sessions as router traffic and count them twice.
+	const routerSessionIds = new Set<string>();
+	for (const [sessionId, provider] of providers) {
+		if (provider === "codex-router") {
+			routerSessionIds.add(sessionId);
+		}
+	}
 
 	// Rows per session let a router session be judged on its whole traffic.
 	const perSession = new Map<string, CodexRow[]>();
@@ -272,7 +304,6 @@ function classify(
 		}
 		// A Codex session drives one provider profile, so the whole session is
 		// classified by its strongest evidence rather than row by row.
-		routerSessionIds.add(sessionId);
 		const winner = resolveRouterSession(sessionRows, routerIndex, routerEvents);
 		if (winner === "deepseek") {
 			upstreams.set(sessionId, "native-deepseek");
@@ -294,6 +325,7 @@ function classify(
 	return {
 		providers,
 		nativeProviders,
+		providerHosts,
 		upstreams,
 		nativeSessionIds,
 		routerSessionIds,
@@ -379,12 +411,19 @@ export async function getCodexSessionIndex(
 	]);
 	const baseUrls = parseProviderBaseUrls(config);
 	const nativeProviders = new Set<string>();
+	const providerHosts = new Map<string, string>();
 	for (const [name, url] of baseUrls) {
 		if (isDeepSeekHost(url)) {
 			nativeProviders.add(name);
 		}
+		// The router runs on localhost, so its "host" says nothing about the upstream
+		// and is left out; those rows are labelled from the router's own event log.
+		const host = hostOf(url);
+		if (host && host !== "127.0.0.1" && host !== "localhost") {
+			providerHosts.set(name, host);
+		}
 	}
-	const value = classify(rows, providers, nativeProviders, routerEvents);
+	const value = classify(rows, providers, nativeProviders, providerHosts, routerEvents);
 	cache = { at: Date.now(), value };
 	return value;
 }

@@ -110,6 +110,48 @@ async function main() {
 		"cost must stay absent: it is not comparable across upstreams"
 	);
 
+	// ---------------------------------------------------------- upstream naming
+	// One name per upstream. Two spellings of the same upstream meant two rows for one
+	// model on one upstream, because grouping is by provider::model.
+	const STALE_NAME = /commandcode|command-code|deepseek-official|DeepSeek API|^Codex$|^Codex Router$/i;
+	for (const source of ["deepseek", "router", "harness", "all"]) {
+		const body = await (await fetch(`${BASE}/api/metrics?source=${source}&days=7`)).json();
+		const names = body.allModels.map((m) => m.provider);
+		const stale = names.filter((n) => STALE_NAME.test(n));
+		check(
+			`${source} has no stale upstream spellings`,
+			stale.length === 0,
+			stale.length ? [...new Set(stale)].join(", ") : `${new Set(names).size} distinct names`
+		);
+		const keys = body.allModels.map((m) => `${m.provider}::${m.model}`);
+		check(
+			`${source} has one row per model and upstream`,
+			new Set(keys).size === keys.length,
+			`${keys.length - new Set(keys).size} duplicate(s)`
+		);
+	}
+
+	// The routed rows must name where they actually went, not the client that sent them.
+	const allBody = await (await fetch(`${BASE}/api/metrics?source=all&days=7`)).json();
+	const allNames = new Set(allBody.allModels.map((m) => m.provider));
+	check(
+		"All splits routed traffic by real upstream",
+		allNames.has("Command Code") && allNames.has("DeepSeek"),
+		[...allNames].join(", ")
+	);
+
+	// deepseek-flash was the reported case: 188 rows from the Codex log plus 139 harness
+	// turns, both native api.deepseek.com, listed as two rows under two names.
+	for (const source of ["deepseek", "all"]) {
+		const body = await (await fetch(`${BASE}/api/metrics?source=${source}&days=all`)).json();
+		const rows = body.allModels.filter((m) => m.model === "deepseek-flash");
+		check(
+			`${source} merges deepseek-flash into one row`,
+			rows.length === 1 && rows[0].provider === "DeepSeek",
+			rows.map((r) => `${r.provider}=${r.requests}`).join(" + ") || "no rows"
+		);
+	}
+
 	// ------------------------------------------------------------ header stays one line
 	// The switchers must not wrap below the title: a wrapped Refresh button reads as a
 	// layout bug. Rows are counted with a tolerance, because controls of different

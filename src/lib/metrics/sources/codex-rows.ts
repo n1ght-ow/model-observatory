@@ -37,6 +37,12 @@ type CcSwitchRow = {
 /** A record plus the Codex session it came from, used for upstream filtering. */
 export type CodexRequestRow = RequestRecord & { sessionId: string };
 
+/**
+ * Placeholder until a caller classifies the row. Never shown: both callers relabel
+ * every row they read, because only they know which session it belongs to.
+ */
+const UNKNOWN_PROVIDER = "unknown";
+
 function toNumber(value: unknown): number {
 	if (typeof value === "number" && Number.isFinite(value)) {
 		return value;
@@ -70,7 +76,7 @@ function toRow(row: CcSwitchRow): CodexRequestRow {
 	return {
 		at,
 		model,
-		provider: "DeepSeek API",
+		provider: UNKNOWN_PROVIDER,
 		sessionId: toStringValue(row.session_id, "unknown"),
 		status: toNumber(row.status_code),
 		durationMs:
@@ -102,7 +108,6 @@ function toRow(row: CcSwitchRow): CodexRequestRow {
  */
 export function readCodexRows(options: {
 	deepseekOnly: boolean;
-	provider: string;
 }): CodexRequestRow[] {
 	const modelFilter = options.deepseekOnly
 		? "AND lower(model) LIKE '%deepseek%'"
@@ -125,5 +130,8 @@ export function readCodexRows(options: {
 		WHERE app_type = 'codex' ${modelFilter}
 		ORDER BY created_at DESC`
 	);
-	return rows.map((row) => ({ ...toRow(row), provider: options.provider }));
+	// Left unlabelled on purpose: the caller decides what this row's upstream is.
+	// CC Switch stores Codex traffic without the upstream, and the answer depends on
+	// which session the row came from, so it cannot be decided here.
+	return rows.map(toRow);
 }

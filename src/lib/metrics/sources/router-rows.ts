@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { providerLabel } from "@/lib/metrics/provider";
 import type { RequestRecord } from "@/lib/metrics/types";
 
 /**
@@ -55,6 +56,14 @@ function toEvent(raw: unknown): UsageEvent | null {
 	};
 }
 
+/**
+ * Router rows, with the router's own provider name normalised.
+ *
+ * The router records the upstream it finally used (\`deepseek\`, \`commandcode\`, and
+ * whatever else is enabled), which is the only place that is written down — CC Switch
+ * keeps the model but not the upstream. Names are normalised here so that a routed
+ * DeepSeek request and a direct one end up under the same label, and merge.
+ */
 export function toRequestRecord(event: UsageEvent): RequestRecord {
 	const inputTokens =
 		event.inputTokens > 0 ? event.inputTokens : event.estimatedInputTokens;
@@ -66,7 +75,7 @@ export function toRequestRecord(event: UsageEvent): RequestRecord {
 	return {
 		at: event.at,
 		model: event.model,
-		provider: event.provider,
+		provider: providerLabel(event.provider),
 		status: event.status,
 		durationMs: event.durationMs > 0 ? event.durationMs : undefined,
 		firstTokenMs: event.firstTokenMs > 0 ? event.firstTokenMs : undefined,

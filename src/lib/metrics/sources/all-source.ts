@@ -1,6 +1,5 @@
 import { getCodexSessionIndex } from "@/lib/codex/session-upstream";
 import {
-	DSH_NATIVE_DEEPSEEK_PROVIDER,
 	readDshUsageEvents,
 	toDshRequestRecords,
 } from "@/lib/dsh/session-usage";
@@ -14,7 +13,15 @@ import {
 	pctChange,
 } from "@/lib/metrics/aggregate";
 import type { MetricSource } from "@/lib/metrics/source";
-import { readCodexRows } from "@/lib/metrics/sources/codex-rows";
+import {
+	COMMAND_CODE_LABEL,
+	DEEPSEEK_LABEL,
+	providerLabel,
+} from "@/lib/metrics/provider";
+import {
+	type CodexRequestRow,
+	readCodexRows,
+} from "@/lib/metrics/sources/codex-rows";
 import { readRouterRowsAsync } from "@/lib/metrics/sources/router-rows";
 import {
 	calendarDaysBetween,
@@ -66,10 +73,41 @@ const ALL_CAPABILITIES: MetricCapabilities = {
 	provider: true,
 };
 
-const HARNESS_PROVIDER = "DeepSeek API · Harness";
-
-function tagProvider(rows: RequestRecord[], provider: string): RequestRecord[] {
-	return rows.map((row) => ({ ...row, provider }));
+/**
+ * Names a Codex row by the session it came from.
+ *
+ * A CC Switch row records the model but not the upstream, so the session index decides:
+ * sessions on api.deepseek.com are DeepSeek, sessions that went through the router are
+ * already counted by the router log and never reach this function, and everything else is
+ * named by the host its provider points at - read from the machine own config.toml rather
+ * than hardcoded, so it stays right if that provider moves.
+ *
+ * When the rollout file is gone nothing can say where the row went, and it is labelled
+ * unknown rather than guessed at.
+ */
+function labelCodexRow(
+	row: CodexRequestRow,
+	index: Awaited<ReturnType<typeof getCodexSessionIndex>>
+): RequestRecord {
+	const upstream = index.upstreams.get(row.sessionId);
+	if (upstream === "native-deepseek") {
+		return { ...row, provider: DEEPSEEK_LABEL };
+	}
+	if (upstream === "command-code") {
+		return { ...row, provider: COMMAND_CODE_LABEL };
+	}
+	const providerName = index.providers.get(row.sessionId);
+	const host = providerName ? index.providerHosts.get(providerName) : undefined;
+	if (host) {
+		return { ...row, provider: host };
+	}
+	// The rollout named a provider but config.toml declares no base URL for it — the
+	// built-in ones are not written down there. The provider name is still real
+	// information, so it is used rather than discarded into "unknown".
+	if (providerName) {
+		return { ...row, provider: providerLabel(providerName) };
+	}
+	return { ...row, provider: "unknown" };
 }
 
 async function getAllSnapshot(
@@ -77,7 +115,7 @@ async function getAllSnapshot(
 ): Promise<MetricsSnapshot> {
 	// Every Codex row, not just the DeepSeek ones: the non-DeepSeek rows are the
 	// reason this tab exists.
-	const codexRows = readCodexRows({ deepseekOnly: false, provider: "Codex" });
+	const codexRows = readCodexRows({ deepseekOnly: false });
 	const codexIndex = await getCodexSessionIndex(
 		codexRows.map((row) => ({
 			sessionId: row.sessionId,
@@ -87,34 +125,25 @@ async function getAllSnapshot(
 		}))
 	);
 
-	// The router log owns everything it saw; its rows are kept whole.
-	const routerRows: RequestRecord[] = tagProvider(
-		await readRouterRowsAsync(),
-		"Codex Router"
-	);
+	// The router log owns everything it saw. It already names the upstream it used, so
+	// these rows are kept as they are - relabelling them "Codex Router" is what used to
+	// hide the fact that most of them went to Command Code.
+	const routerRows: RequestRecord[] = await readRouterRowsAsync();
 
-	// CC Switch contributes only what the router did not already record.
-	const codexDirect = codexRows.filter(
-		(row) => !codexIndex.routerSessionIds.has(row.sessionId)
-	);
+	// CC Switch contributes only what the router did not already record, and those rows
+	// are then named by their session upstream.
+	const codexDirect = codexRows
+		.filter((row) => !codexIndex.routerSessionIds.has(row.sessionId))
+		.map((row) => labelCodexRow(row, codexIndex));
 
 	const dshEvents = await readDshUsageEvents().catch(() => []);
-	// DSH records the real upstream on every turn, which is more useful than one
-	// label for the whole reader. Only the DeepSeek-hosted turns get renamed, to
-	// match how /deepseek labels the same rows, so the two pages agree.
+	// DSH names the upstream on every turn, so this reader only needs the spelling
+	// unified - which is what lets a harness DeepSeek turn merge with a routed one.
 	const harnessLabelled: RequestRecord[] = toDshRequestRecords(dshEvents).map(
-		(row) => ({
-			...row,
-			provider:
-				row.provider === DSH_NATIVE_DEEPSEEK_PROVIDER
-					? HARNESS_PROVIDER
-					: row.provider,
-		})
+		(row) => ({ ...row, provider: providerLabel(row.provider) })
 	);
 
-	const unknown = codexDirect.filter(
-		(row) => !codexIndex.providers.has(row.sessionId)
-	).length;
+	const unknown = codexDirect.filter((row) => row.provider === "unknown").length;
 
 	const rows = filterRequests(
 		[...routerRows, ...harnessLabelled, ...codexDirect].sort(

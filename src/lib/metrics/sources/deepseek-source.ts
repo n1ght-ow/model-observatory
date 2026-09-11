@@ -9,6 +9,7 @@ import {
 	type CodexRequestRow,
 	readCodexRows,
 } from "@/lib/metrics/sources/codex-rows";
+import { DEEPSEEK_LABEL as DEEPSEEK } from "@/lib/metrics/provider";
 import {
 	DSH_NATIVE_DEEPSEEK_PROVIDER,
 	readDshUsageEvents,
@@ -53,11 +54,13 @@ const DEEPSEEK_CAPABILITIES: MetricCapabilities = {
 };
 
 /**
- * Label for turns DeepSeek Harness sent to api.deepseek.com. They share the
- * account with the Codex CLI rows but not the client, so the merged view can
- * still tell them apart in the API column and the provider filter.
+ * Turns DSH sent straight to api.deepseek.com.
+ *
+ * Labelled exactly like the Codex rows on this page: they are the same upstream on the
+ * same account, and giving them their own label is what stopped \`deepseek-flash\` from
+ * merging with itself — two rows, one model, one upstream, listed twice.
  */
-const HARNESS_PROVIDER = "DeepSeek API · Harness";
+const HARNESS_PROVIDER = DEEPSEEK;
 
 /**
  * Plain-language account of what the upstream filter kept and dropped, so the
@@ -245,7 +248,7 @@ async function getDeepSeekAccount(): Promise<DeepSeekAccount> {
 }
 
 function readDeepSeekRows(): CodexRequestRow[] {
-	return readCodexRows({ deepseekOnly: true, provider: "DeepSeek API" });
+	return readCodexRows({ deepseekOnly: true });
 }
 
 async function getDeepSeekSnapshot(
@@ -269,9 +272,12 @@ async function getDeepSeekSnapshot(
 		createdAt: Math.floor(Date.parse(row.at) / 1000),
 	}));
 	const upstreamIndex = await getCodexSessionIndex(codexRows);
-	const codexNativeRows = allRows.filter((row) =>
-		upstreamIndex.nativeSessionIds.has(row.sessionId)
-	);
+	// Every row that survives the upstream filter went to api.deepseek.com by
+	// construction, so they all carry the same name as the harness turns below - which
+	// is what lets the two halves show up as one row per model instead of two.
+	const codexNativeRows: RequestRecord[] = allRows
+		.filter((row) => upstreamIndex.nativeSessionIds.has(row.sessionId))
+		.map((row) => ({ ...row, provider: HARNESS_PROVIDER }));
 	const harnessRows: RequestRecord[] = toDshRequestRecords(
 		dshEvents.filter((event) => event.provider === DSH_NATIVE_DEEPSEEK_PROVIDER)
 	).map((row) => ({ ...row, provider: HARNESS_PROVIDER }));
