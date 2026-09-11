@@ -49,3 +49,8 @@ next-env.d.ts
 
 # local verification scratch
 /logs/verify/
+
+# tray build outputs (tracked once by mistake; not source)
+/tray/bin/
+dist/tray/
+

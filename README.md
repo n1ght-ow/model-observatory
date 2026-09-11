@@ -255,10 +255,11 @@ CSS viewport stays 1688x935.
 
 ### Performance
 
-The host process is idle-cheap and stays warm: the WebView2 is created on the first
-open and then **suspended, never destroyed**, and the Node server is started on
-demand and left running. Nothing is torn down when the flyout closes, so opening it
-again never pays a cold start.
+The host process is idle-cheap and stays warm. Before the panel is ever opened the
+tray is a single **32 MB** process with **no Chromium at all** — the WebView2 is
+created lazily on the first open. From then on it is **suspended, never destroyed**,
+and the Node server is started on demand and left running. Nothing is torn down when
+the flyout closes, so opening it again never pays a cold start.
 
 Measured by `scripts/verify-tray.ps1` (see `logs/verify/report.txt`):
 
