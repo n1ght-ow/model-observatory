@@ -229,11 +229,15 @@ $controlsScript = @'
 # it would be measured against stale JavaScript. Reload it onto the dashboard route and
 # wait for the page to come back before asserting anything about it.
 Invoke-Ctl "reload" | Out-Null
+# Wait for the value to be right, not merely well formed: right after a reload the
+# server-rendered HTML is up but React has not hydrated, and "0|0" matches a
+# number-pipe-number pattern perfectly well. Accepting that would make this assertion
+# a race that passes or fails on timing rather than on behaviour.
 $controls = ""
 for ($i = 0; $i -lt 45; $i++) {
     Start-Sleep -Milliseconds 1000
     $controls = Invoke-Eval $controlsScript
-    if ($controls -match "^[0-9]+\|[0-9]+$") { break }
+    if ($controls -eq "1|1") { break }
 }
 Assert-That "flyout shows the tray pin and close" ($controls -eq "1|1") "$controls"
 

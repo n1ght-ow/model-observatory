@@ -232,7 +232,7 @@ place by a pixel-diff tool that scored the panel against browser screenshots.
 
 |  | Hand-drawn (before) | WebView2 (now) |
 | --- | --- | --- |
-| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port; 4,212 / 7 now — see "Where the extra lines went" |
+| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port; 4,571 / 10 now — see "Where the extra lines went" |
 | Compiler | `csc.exe` (.NET Framework) | `csc.exe` — unchanged |
 | Executable | 530 KB | 55 KB (+ WebView2 DLLs) |
 | Fidelity | hand-matched, pixel by pixel | identical by construction |
@@ -240,21 +240,96 @@ place by a pixel-diff tool that scored the panel against browser screenshots.
 
 Across the whole change: **11,201 lines deleted, 547 added.**
 
+#### The flyout is four files, and the controller is owned
+
+`PanelForm` was one 1,454 line class holding window chrome, DPI arithmetic, the
+WebView lifecycle and the page protocol at once. It is four partial files by
+responsibility, so a new tray capability is a region in the right file rather than a
+search through one class:
+
+| File | Lines | Holds |
+| --- | --- | --- |
+| `PanelForm.cs` | 615 | window chrome, dragging, placement, layout |
+| `PanelForm.WebView.cs` | 531 | the WebView lifecycle |
+| `PanelForm.Bridge.cs` | 299 | the page/tray protocol and navigation guards |
+| `PanelForm.Scaling.cs` | 294 | display scale, drawn size, ZoomFactor |
+
+The split moved members **verbatim** and asserted that each of the 113 members landed
+in exactly one file; the executable came out the same size because no code changed in
+the move.
+
+**The controller is owned, not reflected into.** WebView2's WinForms `WebView2`
+control keeps its controller in the private field `_coreWebView2Controller` and never
+exposes it. Chromium only accepts a suspend while the controller reports itself
+invisible, so the old code reached into that field by reflection — a private
+implementation detail that would have failed silently inside `catch {}` if the SDK
+ever renamed it. The tray now calls
+`CoreWebView2Environment.CreateCoreWebView2ControllerAsync` against a host window it
+owns and uses `IsVisible`, `Bounds`, `ZoomFactor` and `RasterizationScale`, all
+public. `BoundsMode` is pinned to `UseRawPixels` so `Bounds` means what the scaling
+arithmetic assumes.
+
+Two behaviours turned out to depend on the control that was removed. Both showed up as
+the panel hiding itself about 700 ms after opening, and both were found by logging
+rather than guessing:
+
+- the WinForms control was a **focusable** control. A plain `Panel` is not, so
+  focusing it did nothing, the form never became the active window, and it deactivated
+  — hiding itself — as soon as the process that asked for it exited. The host is now a
+  small `WebHost : Panel` with `ControlStyles.Selectable`;
+- the control hid its child window on suspend as well as flipping `IsVisible`.
+  Flipping `IsVisible` alone left Chromium compositing: `suspend hidden: suspended`
+  was still reported, but hidden CPU went from **0 to 172 ms** per 0.5 s sample. The
+  host is hidden too, and the gate is back to 0.
+
+**Display scale is read per open, and read correctly.** `dpiScale` used to be read
+once in the constructor via `Graphics.FromHwnd(IntPtr.Zero)`, which reports the
+*primary* monitor's DPI — the wrong answer on a mixed-DPI desktop — while
+`PositionNearTray` placed the window on the monitor under the pointer. The two
+disagreed about which screen this was. It now asks `GetDpiForMonitor` for the monitor
+under the pointer, re-reads it whenever the panel opens, and recomputes the drawn size
+if it changed.
+
+**Measured, not assumed.** This machine has one display, so the mixed-DPI path could
+not be exercised: the per-monitor reading is verified to give the same answer as before
+(DPR 1.275, viewport 1689x936), and the behaviour on a second monitor at a different
+scale is **untested**. Dragging the panel between monitors of different scale, or
+changing the display scale while the tray runs, remains a known boundary.
+
+`DragStripHeight` is in physical pixels and is deliberately **not** multiplied by the
+scale, so the grip strip stays a constant size on screen rather than growing with the
+content; every other measurement in the scaling file is scaled. That inconsistency is
+intentional and is named in the source.
+
 #### Where the extra lines went
 
 The port left the tray at 1,592 lines in three files, all of it window chrome and
-WebView plumbing. It is 4,212 lines in seven files now. That is more, and the reason
-is that the tray grew capabilities it did not have: a control channel
-(`ControlChannel.cs`, 373), persisted settings (`Settings.cs`, 184), process sampling
-(`ProcessSampler.cs`, 141), the measurements themselves (`Diagnostics.cs`, 295), and
-the client half of the channel in `Program.cs`.
+WebView plumbing. It is 4,571 lines in ten files now. **This is more, and the target
+was less.** The honest breakdown:
+
+| | Lines |
+| --- | --- |
+| `Program.cs` (was 1,805) | 1,506 |
+| `PanelForm` (4 partials, was 1,454 in one) | 1,739 |
+| `ControlChannel.cs` | 373 |
+| `ServerHost.cs` | 333 |
+| `Diagnostics.cs` | 295 |
+| `Settings.cs` | 184 |
+| `ProcessSampler.cs` | 141 |
 
 What did *not* grow is the diagnostic shell. `CliContext` — 460 lines of headless
-driver that shipped inside the executable and duplicated probe/shot/cycle — is gone
-entirely; `Program.cs` went from 1,805 lines to 1,448 while gaining every forwarding
-path above. There is now no diagnostic code outside `Diagnostics.cs`, and no
+driver that shipped inside the executable and duplicated probe/shot/cycle — is **gone
+entirely**; `Program.cs` went from 1,805 lines to 1,506 *while gaining* every
+forwarding path above. There is no diagnostic code outside `Diagnostics.cs`, and no
 `--mode` to add when a capability arrives: it is one row in
-`RegisterControlHandlers()`.
+`RegisterControlHandlers()`, demonstrated above.
+
+The rest of the growth is capability that did not exist: a control channel, persisted
+settings, process sampling, and the measurements themselves. Roughly 1,300 lines of
+the 4,571 are the channel and the diagnostics. Whether that is worth it is a judgement
+call, but it is not a claim that the tray got smaller — the objective asked for
+`tray/` to fit in 1,976 lines, and it does not. What it does fit is the part that
+mattered: a new capability is one table row, and verification is a command that fails.
 
 ### Viewport and size
 

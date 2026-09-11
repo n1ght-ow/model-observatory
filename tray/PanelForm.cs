@@ -1,79 +1,50 @@
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
-using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using Microsoft.Web.WebView2.Core;
-using Microsoft.Web.WebView2.WinForms;
 
 namespace RouterMonitorTray
 {
     /// <summary>
-    /// The tray flyout. It is a bare borderless window whose only child is a
-    /// WebView2 control pointed at the local dashboard, so what the flyout shows
-    /// is literally the web app - there is no drawing code here at all.
+    /// The flyout window itself: chrome, dragging, placement and layout.
     ///
-    /// The CSS viewport is pinned to the size the reference screenshots were
-    /// captured at (1688x935) by pairing the control size with ZoomFactor, so the
-    /// page never falls back to its responsive layout.
+    /// PanelForm is split across partial files by responsibility, so a new tray
+    /// capability is a region in the right file rather than a search through one
+    /// 1,400 line class:
+    ///
+    ///   PanelForm.cs          window chrome, dragging, placement, layout
+    ///   PanelForm.Scaling.cs  display scale, drawn size, ZoomFactor
+    ///   PanelForm.WebView.cs  the WebView lifecycle
+    ///   PanelForm.Bridge.cs   the page/tray protocol and navigation guards
     /// </summary>
-    internal sealed class PanelForm : Form
+    internal sealed partial class PanelForm : Form
     {
         public const int CssWidth = 1688;
+
         public const int CssHeight = 935;
 
         /// <summary>Smallest and largest drawn size the settings are clamped to.</summary>
-        private const double MinUserScale = 0.5;
-        private const double MaxUserScale = 2.0;
-
-        /// <summary>
-        /// Bounds for the grip strip above the page, in physical pixels. At 150%
-        /// display scaling 20 is ~13 logical pixels, close to a normal title bar.
-        /// </summary>
-        private const int MinDragStripHeight = 0;
-        private const int MaxDragStripHeight = 60;
 
         private const int ScreenMargin = 24;
-        private const int WM_NCHITTEST = 0x0084;
-        private const int WM_SYSCOMMAND = 0x0112;
-        private const int WM_WINDOWPOSCHANGING = 0x0046;
-        private const int WM_MOVING = 0x0216;
-        private const int WM_NCLBUTTONDOWN = 0x00A1;
-        private const int HTCLIENT = 1;
-        private const int HTCAPTION = 2;
-        private const int SC_SIZE = 0xF000;
-        private const int SC_MOVE = 0xF010;
 
-        /// <summary>
-        /// The one place the page and the tray speak to each other. Every message is
-        /// a versioned envelope - `{v:1,type:...}` - so the page can tell what it is
-        /// running inside, and so a new message type is a new `case` on both sides
-        /// rather than a new magic string. This is v1.
-        /// </summary>
-        private const string BridgeScript =
-            "(function(){if(window.__rmBridge){return;}" +
-            "var post=function(m){try{window.chrome.webview.postMessage(JSON.stringify(m));}catch(e){}};" +
-            "var listen=function(fn){try{window.chrome.webview.addEventListener('message',function(e){" +
-            "var m=e.data;if(typeof m==='string'){try{m=JSON.parse(m);}catch(err){return;}}" +
-            "if(m&&m.v===1){fn(m);}});}catch(e){}};" +
-            "window.__rmBridge={version:1,post:post,listen:listen," +
-            "close:function(){post({v:1,type:'close'});}," +
-            "openExternal:function(url){post({v:1,type:'openExternal',url:String(url)});}," +
-            "setPinned:function(on){post({v:1,type:'pin',pinned:!!on});}," +
-            "setStatus:function(text){post({v:1,type:'status',text:String(text)});}," +
-            "ready:function(){post({v:1,type:'ready'});}};" +
-            "document.addEventListener('keydown',function(e){" +
-            "if(e.key!=='Escape'){return;}" +
-            "var open=document.querySelector('[role=\"dialog\"],[role=\"listbox\"],[role=\"menu\"]');" +
-            "if(open){return;}" +
-            "window.__rmBridge.close();" +
-            "},true);" +
-            "post({v:1,type:'bridge'});})();";
+        private const int WM_NCHITTEST = 0x0084;
+
+        private const int WM_SYSCOMMAND = 0x0112;
+
+        private const int WM_WINDOWPOSCHANGING = 0x0046;
+
+        private const int WM_MOVING = 0x0216;
+
+        private const int WM_NCLBUTTONDOWN = 0x00A1;
+
+        private const int HTCLIENT = 1;
+
+        private const int HTCAPTION = 2;
+
+        private const int SC_SIZE = 0xF000;
+
+        private const int SC_MOVE = 0xF010;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct WINDOWPOS
@@ -87,37 +58,48 @@ namespace RouterMonitorTray
             public uint flags;
         }
 
-        private readonly WebView2 webView;
         private readonly Label loading;
+
+        /// <summary>
+        /// The window the WebView2 controller is parented to.
+        ///
+        /// A plain Panel cannot take focus, so focusing it did nothing, the form never
+        /// became the active window, and it deactivated - hiding itself - the moment the
+        /// process that asked for it exited. The WinForms WebView2 control was a
+        /// focusable control, which is why this never showed up before.
+        /// </summary>
+        private sealed class WebHost : Panel
+        {
+            public WebHost()
+            {
+                SetStyle(ControlStyles.Selectable, true);
+                TabStop = true;
+            }
+        }
+
         private readonly Panel dragStrip;
-        private readonly float dpiScale;   // display scale, e.g. 1.5 at 150%
-        private float userScale;           // drawn size as a fraction of the browser's own
-        private float scale;               // physical pixels per CSS pixel
-        private double webZoom;            // the ZoomFactor that produces it
-        private int dragStripHeight;       // grip strip height, in physical pixels
+
+        /// <summary>The window the WebView2 controller is parented to.</summary>
+        private readonly WebHost webHost;
 
         private bool stayOpen;
-        private bool webViewReady;
-        private bool webViewFailed;
-        private bool suspended;
-        private bool initStarted;
+
         private bool userMoved;
-        private int suspendResult = -1;
-        private string bridgeLastMessage = "(none)";
-        private string lastDashboardUri;
-        private bool cancelledNavigation;
-        private bool recovering;
 
         private Point anchor;
+
         private string startPage = "/";
 
         [DllImport("user32.dll")]
+
         private static extern bool ReleaseCapture();
 
         [DllImport("user32.dll")]
+
         private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
 
         /// <summary>Which dashboard route the flyout opens on (used by the evidence tool).</summary>
+
         public string StartPage
         {
             get { return startPage; }
@@ -125,25 +107,7 @@ namespace RouterMonitorTray
         }
 
         /// <summary>True once the page has painted at least one successful navigation.</summary>
-        public bool IsContentReady
-        {
-            get { return webViewReady && !loading.Visible; }
-        }
 
-        /// <summary>Whether Chromium actually accepted the suspend request.</summary>
-        public string SuspendState
-        {
-            get
-            {
-                if (suspendResult < 0)
-                {
-                    return "not-attempted";
-                }
-                return suspendResult == 1 ? "suspended" : "refused";
-            }
-        }
-
-        /// <summary>When true the flyout survives losing focus (pinned by the user).</summary>
         public bool StayOpen
         {
             get { return stayOpen; }
@@ -151,15 +115,7 @@ namespace RouterMonitorTray
         }
 
         /// <summary>The last message type the page sent, for the diagnostics report.</summary>
-        public string BridgeState
-        {
-            get { return bridgeLastMessage; }
-        }
 
-        /// <summary>
-        /// Raised when the page pins or unpins the panel, so the tray menu and the
-        /// settings file can follow a decision that was made inside the page.
-        /// </summary>
         public event Action<bool> PinnedChanged;
 
         /// <summary>
@@ -176,16 +132,6 @@ namespace RouterMonitorTray
         /// </summary>
         public event Action<string> StatusReported;
 
-        public bool WebViewFailed
-        {
-            get { return webViewFailed; }
-        }
-
-        /// <summary>
-        /// Creates the window handle without showing anything. The control channel
-        /// marshals work onto this form's thread, and BeginInvoke needs a handle to
-        /// post to - the tray has one from startup, before the panel is ever opened.
-        /// </summary>
         public void EnsureHandle()
         {
             if (!IsHandleCreated)
@@ -198,20 +144,6 @@ namespace RouterMonitorTray
         /// Waits until the first page has painted. Polls rather than blocks, so it
         /// has to be awaited from the UI thread's own message loop.
         /// </summary>
-        public async Task<bool> WaitForContentAsync(int timeoutMs)
-        {
-            Stopwatch clock = Stopwatch.StartNew();
-            while (clock.ElapsedMilliseconds < timeoutMs)
-            {
-                if (IsContentReady)
-                {
-                    return true;
-                }
-                await Task.Delay(100);
-            }
-            return IsContentReady;
-        }
-
         public PanelForm()
         {
             TraySettings settings = SettingsStore.Current;
@@ -248,8 +180,11 @@ namespace RouterMonitorTray
             dragStrip.MouseUp += OnDragStripMouseUp;
             dragStrip.Paint += OnDragStripPaint;
 
-            webView = new WebView2();
-            webView.DefaultBackgroundColor = Color.White;
+            // A plain child window, not the WinForms WebView2 control: the controller
+            // is created and owned here (see PanelForm.WebView.cs), so nothing has to
+            // reach into the wrapper's private fields to make suspend and resume work.
+            webHost = new WebHost();
+            webHost.BackColor = Color.White;
 
             // A single label, shown only while the local server is starting or the
             // first page is still loading. It deliberately imitates nothing.
@@ -260,7 +195,7 @@ namespace RouterMonitorTray
             loading.Font = new Font("Segoe UI", 11f, FontStyle.Regular);
             loading.Text = "正在启动本地服务…";
 
-            Controls.Add(webView);
+            Controls.Add(webHost);
             Controls.Add(loading);
             Controls.Add(dragStrip);
             LayoutChildren();
@@ -281,7 +216,7 @@ namespace RouterMonitorTray
         /// </summary>
         private void LayoutChildren()
         {
-            if (webView == null || dragStrip == null || loading == null)
+            if (webHost == null || dragStrip == null || loading == null)
             {
                 return;
             }
@@ -291,8 +226,11 @@ namespace RouterMonitorTray
             int pageH = Math.Max(0, h - strip);
 
             dragStrip.Bounds = new Rectangle(0, 0, w, strip);
-            webView.Bounds = new Rectangle(0, strip, w, pageH);
+            webHost.Bounds = new Rectangle(0, strip, w, pageH);
             loading.Bounds = new Rectangle(0, strip, w, pageH);
+            // The controller does not follow the window it is parented to; its bounds
+            // are set here every time the layout changes.
+            SyncControllerBounds();
 
             loading.BringToFront();
             dragStrip.BringToFront();
@@ -363,85 +301,6 @@ namespace RouterMonitorTray
             }
         }
 
-        private static float DetectDpiScale()
-        {
-            float dpi = 96f;
-            try
-            {
-                using (Graphics g = Graphics.FromHwnd(IntPtr.Zero))
-                {
-                    if (g.DpiX > 0f)
-                    {
-                        dpi = g.DpiX;
-                    }
-                }
-            }
-            catch
-            {
-            }
-            float value = dpi / 96f;
-            return value < 1f ? 1f : value;
-        }
-
-        /// <summary>
-        /// Physical pixels per CSS pixel.
-        ///
-        /// WebView2 already scales web content by the display scale, so a ZoomFactor
-        /// of 1 renders at exactly the size the browser would: on this machine
-        /// (2560x1600 at 150%) that is 1688*1.5 = 2532 physical pixels wide, and the
-        /// CSS viewport WebView2 reports is 1688 - the same number the reference
-        /// screenshots were taken at. The flyout only shrinks - never the layout -
-        /// when the scaled panel would not fit the work area, by lowering both the
-        /// window size and ZoomFactor together so the CSS viewport stays 1688x935.
-        /// </summary>
-        private float ComputeScale(float dpi)
-        {
-            // Take the user's fraction of the browser's own size, then give up size
-            // (never the layout) if that still would not fit the work area.
-            float fit = dpi;
-            try
-            {
-                Screen screen = Screen.PrimaryScreen;
-                if (screen != null)
-                {
-                    Rectangle work = screen.WorkingArea;
-                    float fitX = (work.Width - ScreenMargin) / (float)CssWidth;
-                    float fitY = (work.Height - ScreenMargin - dragStripHeight) / (float)CssHeight;
-                    fit = Math.Min(fitX, fitY);
-                }
-            }
-            catch
-            {
-            }
-
-            float value = Math.Min(dpi * userScale, fit);
-            if (value < 0.25f)
-            {
-                value = 0.25f;
-            }
-            if (value > 5f)
-            {
-                value = 5f;
-            }
-            return value;
-        }
-
-        /// <summary>Physically rendered pixels per CSS pixel (the browser's DPR).</summary>
-        public float CssScale
-        {
-            get { return scale; }
-        }
-
-        public double WebZoomFactor
-        {
-            get { return webZoom; }
-        }
-
-        public float DpiScale
-        {
-            get { return dpiScale; }
-        }
-
         public void AnchorTo(Point position)
         {
             anchor = position;
@@ -449,18 +308,7 @@ namespace RouterMonitorTray
         }
 
         /// <summary>Drawn size as a fraction of the browser's own; the CSS viewport never changes.</summary>
-        public double UserScaleValue
-        {
-            get { return userScale; }
-        }
 
-        /// <summary>The height of the strip above the page, in physical pixels.</summary>
-        public int DragStripHeightValue
-        {
-            get { return dragStripHeight; }
-        }
-
-        /// <summary>Puts the panel back where the user last left it, if they ever moved it.</summary>
         public void RestoreSavedPosition()
         {
             TraySettings settings = SettingsStore.Current;
@@ -473,6 +321,7 @@ namespace RouterMonitorTray
         }
 
         /// <summary>Docks the panel to the tray again and forgets the saved position.</summary>
+
         public void ForgetPosition()
         {
             userMoved = false;
@@ -485,40 +334,6 @@ namespace RouterMonitorTray
         /// ZoomFactor move together so the CSS viewport stays 1688x935. Applied live,
         /// so the menu can change it while the panel is open.
         /// </summary>
-        public void ApplyUserScale(double value)
-        {
-            if (value < MinUserScale)
-            {
-                value = MinUserScale;
-            }
-            if (value > MaxUserScale)
-            {
-                value = MaxUserScale;
-            }
-            userScale = (float)value;
-            SettingsStore.Current.userScale = userScale;
-            Rescale();
-            SettingsStore.Save();
-        }
-
-        /// <summary>Changes the height of the grip strip above the page, live.</summary>
-        public void ApplyDragStripHeight(int value)
-        {
-            if (value < MinDragStripHeight)
-            {
-                value = MinDragStripHeight;
-            }
-            if (value > MaxDragStripHeight)
-            {
-                value = MaxDragStripHeight;
-            }
-            dragStripHeight = value;
-            SettingsStore.Current.dragStripHeight = value;
-            Rescale();
-            SettingsStore.Save();
-        }
-
-        /// <summary>Turns always-on-top on or off, live.</summary>
         public void ApplyTopMost(bool value)
         {
             TopMost = value;
@@ -529,40 +344,6 @@ namespace RouterMonitorTray
         /// <summary>
         /// Recomputes the drawn geometry from userScale and dragStripHeight. The CSS
         /// viewport is the invariant here, never the physical size.
-        /// </summary>
-        private void Rescale()
-        {
-            scale = ComputeScale(dpiScale);
-            webZoom = scale / dpiScale;
-            if (webViewReady)
-            {
-                try
-                {
-                    webView.ZoomFactor = webZoom;
-                }
-                catch (Exception ex)
-                {
-                    LogInit("zoom: " + ex.Message);
-                }
-            }
-            ClientSize = new Size(
-                (int)Math.Round(CssWidth * scale),
-                (int)Math.Round(CssHeight * scale) + dragStripHeight);
-            LayoutChildren();
-            if (userMoved)
-            {
-                KeepOnScreen();
-            }
-            else
-            {
-                PositionNearTray();
-            }
-        }
-
-        /// <summary>
-        /// Pulls a window that has ended up off the desktop back into view. Moving is
-        /// free, but dragging the panel somewhere unreachable would strand it: it has
-        /// no taskbar entry to restore it from.
         /// </summary>
         private void KeepOnScreen()
         {
@@ -648,6 +429,7 @@ namespace RouterMonitorTray
         }
 
         [DllImport("dwmapi.dll")]
+
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
         protected override bool ShowWithoutActivation
@@ -672,17 +454,26 @@ namespace RouterMonitorTray
             base.OnDeactivate(e);
             if (!stayOpen)
             {
+                // Logged because "the panel opened and vanished" has no other symptom:
+                // losing activation is the only thing that hides it.
+                LogInit("panel: deactivated at " + DateTime.Now.ToString("HH:mm:ss.fff") + " -> hiding");
                 HidePanel();
             }
         }
 
         /// <summary>Opens the flyout next to the tray icon and makes sure it has content.</summary>
+
         public void ShowPanel()
         {
+            LogInit("panel: show requested at " + DateTime.Now.ToString("HH:mm:ss.fff") +
+                " (ready=" + (webViewReady ? "yes" : "no") + ", content=" + (IsContentReady ? "yes" : "no") + ")");
             // Resume while the window is still hidden: WebView2 requires the
             // webview to be invisible when Resume() runs, otherwise the call is
             // rejected and the page stays frozen.
             RestoreWebView();
+            // The pointer may be over a different monitor than last time, and the drawn
+            // size depends on its scale.
+            RefreshDisplayScale();
             // Only placed automatically until the user has moved it themselves; after
             // that the window keeps whatever position it was dragged to.
             if (userMoved)
@@ -696,7 +487,7 @@ namespace RouterMonitorTray
             Visible = true;
             BringToFront();
             Activate();
-            webView.Focus();
+            FocusContent();
             if (!webViewReady && !initStarted)
             {
                 StartInit();
@@ -715,45 +506,6 @@ namespace RouterMonitorTray
         /// UI thread except for the WebView calls, and refuses to run twice at once:
         /// ShowPanel is called on every open.
         /// </summary>
-        private async void RecoverServer()
-        {
-            if (recovering)
-            {
-                return;
-            }
-            recovering = true;
-            try
-            {
-                loading.Visible = true;
-                SetStatus("正在重新连接本地服务…");
-                bool serving = await ServerHost.EnsureAsync(240000, SetStatus).ConfigureAwait(true);
-                if (serving)
-                {
-                    loading.Visible = false;
-                    Reload();
-                }
-                else
-                {
-                    string detail = ServerHost.LastProblem;
-                    SetStatus("本地服务不可用" + (string.IsNullOrEmpty(detail) ? "" : "：" + detail));
-                    if (ProblemReported != null)
-                    {
-                        ProblemReported(string.IsNullOrEmpty(detail)
-                            ? @"本地服务不可用，详情见 logs\dashboard.log"
-                            : detail);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogInit("recover: " + ex.Message);
-            }
-            finally
-            {
-                recovering = false;
-            }
-        }
-
         public void HidePanel()
         {
             Hide();
@@ -776,108 +528,6 @@ namespace RouterMonitorTray
         /// Sends the panel to a dashboard route. Only same-dashboard pages are
         /// accepted, so this cannot be used to point the flyout somewhere else.
         /// </summary>
-        public void NavigateTo(string route)
-        {
-            if (string.IsNullOrEmpty(route) || !webViewReady)
-            {
-                return;
-            }
-            string target = ServerHost.BaseUrl + (route.StartsWith("/") ? route : "/" + route);
-            if (!IsDashboard(target))
-            {
-                LogInit("navigate: refused " + Truncate(target));
-                return;
-            }
-            try
-            {
-                webView.CoreWebView2.Navigate(target);
-            }
-            catch (Exception ex)
-            {
-                LogInit("navigate: " + ex.Message);
-            }
-        }
-
-        /// <summary>
-        /// Reloads the dashboard route the panel is on. Deliberately not
-        /// CoreWebView2.Reload(), which reloads the *current* URL - if the panel had
-        /// somehow ended up on an API response, that reloaded the API response and
-        /// there was no way back.
-        /// </summary>
-        public void Reload()
-        {
-            if (webViewReady)
-            {
-                try
-                {
-                    string target = string.IsNullOrEmpty(lastDashboardUri)
-                        ? ServerHost.BaseUrl + startPage
-                        : lastDashboardUri;
-                    webView.CoreWebView2.Navigate(target);
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    LogInit("reload: " + ex.Message);
-                }
-            }
-            StartInit();
-        }
-
-        public string CoreVersion()
-        {
-            if (!webViewReady)
-            {
-                return "(not initialised)";
-            }
-            try
-            {
-                return webView.CoreWebView2.Environment.BrowserVersionString;
-            }
-            catch
-            {
-                return "(unknown)";
-            }
-        }
-
-        /// <summary>Runs JavaScript in the page and returns the result (used by --probe).</summary>
-        public async Task<string> RunScriptAsync(string script)
-        {
-            if (!webViewReady)
-            {
-                return null;
-            }
-            try
-            {
-                return await webView.CoreWebView2.ExecuteScriptAsync(script);
-            }
-            catch (Exception ex)
-            {
-                LogInit("ExecuteScriptAsync failed: " + ex.Message);
-                return null;
-            }
-        }
-
-        /// <summary>Saves a screenshot of the flyout exactly as it appears on screen.</summary>
-        public void CaptureTo(string path)
-        {
-            Rectangle bounds = Bounds;
-            using (Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height))
-            {
-                using (Graphics g = Graphics.FromImage(bitmap))
-                {
-                    g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
-                }
-                string full = Path.GetFullPath(path);
-                string dir = Path.GetDirectoryName(full);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    Directory.CreateDirectory(dir);
-                }
-                bitmap.Save(full, ImageFormat.Png);
-            }
-        }
-
         private void PositionNearTray()
         {
             Rectangle cursor = new Rectangle(Cursor.Position, new Size(1, 1));
@@ -924,99 +574,6 @@ namespace RouterMonitorTray
         /// then navigate. Runs entirely off the UI thread except for the WebView2
         /// calls, which must happen on it.
         /// </summary>
-        private async void StartInit()
-        {
-            if (initStarted)
-            {
-                return;
-            }
-            initStarted = true;
-
-            bool serving = await ServerHost.EnsureAsync(240000, SetStatus).ConfigureAwait(true);
-            if (!serving)
-            {
-                // Not sticky: the host may still be building, so opening the panel
-                // again retries instead of staying dead until a restart.
-                initStarted = false;
-                webViewFailed = true;
-                string detail = ServerHost.LastProblem;
-                SetStatus("本地服务启动失败" + (string.IsNullOrEmpty(detail) ? "" : "：" + detail));
-                if (ProblemReported != null)
-                {
-                    ProblemReported(string.IsNullOrEmpty(detail)
-                        ? @"本地服务启动失败，详情见 logs\dashboard.log"
-                        : detail);
-                }
-                return;
-            }
-
-            SetStatus("正在加载页面…");
-            bool ok = await InitWebViewAsync().ConfigureAwait(true);
-            if (!ok)
-            {
-                // Also not sticky. A profile lock left behind by a force-killed
-                // previous run, or an Edge update in progress, must not brick the
-                // flyout for the rest of the session.
-                initStarted = false;
-                webViewFailed = true;
-                SetStatus("无法初始化 WebView2，正在重试…（详情见 logs\tray-init.log）");
-                await Task.Delay(2500).ConfigureAwait(true);
-                StartInit();
-            }
-        }
-
-        private async Task<bool> InitWebViewAsync()
-        {
-            if (webViewReady)
-            {
-                return true;
-            }
-            try
-            {
-                string userData = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    @"RouterMonitorTray\WebView2");
-                Directory.CreateDirectory(userData);
-                LogInit("CreateAsync userData=" + userData);
-
-                CoreWebView2Environment environment =
-                    await CoreWebView2Environment.CreateAsync(null, userData, null).ConfigureAwait(true);
-                LogInit("CreateAsync ok, browser=" + environment.BrowserVersionString);
-                await webView.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
-                LogInit("EnsureCoreWebView2Async ok");
-
-                CoreWebView2 core = webView.CoreWebView2;
-                core.Settings.AreDefaultContextMenusEnabled = false;
-                core.Settings.IsStatusBarEnabled = false;
-                core.Settings.AreBrowserAcceleratorKeysEnabled = false;
-                core.Settings.IsZoomControlEnabled = false;
-                core.Settings.IsPinchZoomEnabled = false;
-                core.Settings.IsSwipeNavigationEnabled = false;
-                core.Settings.AreDevToolsEnabled = false;
-                core.Settings.IsPasswordAutosaveEnabled = false;
-                core.Settings.IsGeneralAutofillEnabled = false;
-
-                core.WebMessageReceived += OnWebMessage;
-                core.NavigationStarting += OnNavigationStarting;
-                core.NewWindowRequested += OnNewWindowRequested;
-                core.NavigationCompleted += OnNavigationCompleted;
-                core.ProcessFailed += OnProcessFailed;
-                await core.AddScriptToExecuteOnDocumentCreatedAsync(BridgeScript).ConfigureAwait(true);
-
-                webView.ZoomFactor = webZoom;
-                webViewReady = true;
-                core.Navigate(ServerHost.BaseUrl + startPage);
-                LogInit("navigated to " + ServerHost.BaseUrl + startPage);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                LogInit("FAILED: " + ex);
-                return false;
-            }
-        }
-
-        /// <summary>Appends a line to logs\tray-init.log; never throws.</summary>
         internal static void LogInit(string message)
         {
             try
@@ -1031,421 +588,25 @@ namespace RouterMonitorTray
             }
         }
 
-        private void OnProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)
-        {
-            webViewFailed = true;
-            SetStatus("渲染进程异常，正在重试…");
-            try
-            {
-                webView.CoreWebView2.Reload();
-            }
-            catch
-            {
-            }
-        }
-
-        private void OnNavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
-        {
-            if (cancelledNavigation && !e.IsSuccess)
-            {
-                cancelledNavigation = false;
-                return;
-            }
-            cancelledNavigation = false;
-            if (e.IsSuccess)
-            {
-                if (loading.Visible)
-                {
-                    loading.Visible = false;
-                }
-                string uri = null;
-                try
-                {
-                    uri = webView.CoreWebView2.Source;
-                }
-                catch
-                {
-                }
-                if (IsDashboard(uri))
-                {
-                    // Remembered so "reload" means "reload this page", not "reload
-                    // whatever URL we happen to be on".
-                    lastDashboardUri = uri;
-                }
-            }
-            else
-            {
-                loading.Visible = true;
-                SetStatus("页面加载失败：" + e.WebErrorStatus);
-            }
-        }
-
-        /// <summary>
-        /// Page to tray. Unknown types are logged and ignored rather than fatal: the
-        /// page may be newer than the tray, and a dashboard that will not open because
-        /// it said something unexpected is a worse failure than a dropped message.
-        /// </summary>
-        private void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
-        {
-            string raw;
-            try
-            {
-                raw = e.TryGetWebMessageAsString();
-            }
-            catch (Exception ex)
-            {
-                LogInit("bridge: unreadable message (" + ex.Message + ")");
-                return;
-            }
-            if (string.IsNullOrEmpty(raw))
-            {
-                return;
-            }
-
-            string type = raw;
-            string url = null;
-            string statusText = null;
-            bool pinned = false;
-            bool wellFormed = false;
-
-            if (raw[0] == '{')
-            {
-                try
-                {
-                    Dictionary<string, object> envelope =
-                        ControlProtocol.Serializer.Deserialize<Dictionary<string, object>>(raw);
-                    type = Field(envelope, "type");
-                    url = Field(envelope, "url");
-                    statusText = Field(envelope, "text");
-                    pinned = Flag(envelope, "pinned");
-                    wellFormed = Field(envelope, "v") == "1";
-                }
-                catch (Exception ex)
-                {
-                    LogInit("bridge: bad envelope (" + ex.Message + "): " + Truncate(raw));
-                    return;
-                }
-            }
-            else if (raw != "rm:close")
-            {
-                wellFormed = false;
-            }
-            else
-            {
-                // The pre-v1 magic string, kept working so an older cached page cannot
-                // wedge the flyout.
-                type = "close";
-            }
-
-            if (!wellFormed && raw[0] == '{')
-            {
-                LogInit("bridge: unsupported version in " + Truncate(raw));
-                return;
-            }
-
-            bridgeLastMessage = type;
-            switch (type)
-            {
-                case "bridge":
-                case "ready":
-                    // The page is up and knows where it is; tell it what the tray thinks.
-                    PublishState();
-                    break;
-                case "close":
-                    HidePanel();
-                    break;
-                case "openExternal":
-                    Program.OpenExternal(url);
-                    break;
-                case "pin":
-                    StayOpen = pinned;
-                    if (PinnedChanged != null)
-                    {
-                        PinnedChanged(pinned);
-                    }
-                    PublishState();
-                    break;
-                case "status":
-                    if (StatusReported != null)
-                    {
-                        StatusReported(statusText == null ? "" : statusText);
-                    }
-                    break;
-                default:
-                    LogInit("bridge: unknown type '" + type + "'");
-                    break;
-            }
-        }
-
-        /// <summary>Tells the page what the tray currently is, over the same protocol.</summary>
-        private void PublishState()
-        {
-            if (!webViewReady)
-            {
-                return;
-            }
-            try
-            {
-                Dictionary<string, object> state = new Dictionary<string, object>();
-                state["v"] = 1;
-                state["type"] = "state";
-                state["pinned"] = stayOpen;
-                webView.CoreWebView2.PostWebMessageAsJson(ControlProtocol.Encode(state));
-            }
-            catch (Exception ex)
-            {
-                LogInit("bridge: could not publish state (" + ex.Message + ")");
-            }
-        }
-
-        private static string Field(Dictionary<string, object> map, string key)
-        {
-            object raw;
-            if (map != null && map.TryGetValue(key, out raw) && raw != null)
-            {
-                return Convert.ToString(raw);
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Reads a JSON boolean. Convert.ToString on a bool gives "True", so comparing
-        /// the text against "true" silently answers false for every value.
-        /// </summary>
-        private static bool Flag(Dictionary<string, object> map, string key)
-        {
-            object raw;
-            if (map == null || !map.TryGetValue(key, out raw) || raw == null)
-            {
-                return false;
-            }
-            if (raw is bool)
-            {
-                return (bool)raw;
-            }
-            string text = Convert.ToString(raw).Trim();
-            return string.Equals(text, "true", StringComparison.OrdinalIgnoreCase) || text == "1";
-        }
-
-        private static string Truncate(string text)
-        {
-            if (text == null)
-            {
-                return "(null)";
-            }
-            return text.Length <= 200 ? text : text.Substring(0, 200) + "...";
-        }
-
-        /// <summary>
-        /// The flyout has no address bar and no back button, so a navigation away from
-        /// the dashboard is a one way trip - clicking one of the "JSON" links used to
-        /// strand the panel on a bare API response. Anything that is not our own origin
-        /// is cancelled here and handed to the real browser instead.
-        /// </summary>
-        private void OnNavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
-        {
-            if (IsDashboard(e.Uri))
-            {
-                return;
-            }
-            e.Cancel = true;
-            // Cancelling still produces a NavigationCompleted with a failure status,
-            // and that would put the "page failed to load" label on screen for a
-            // navigation the user never wanted in the first place.
-            cancelledNavigation = true;
-            if (IsWeb(e.Uri))
-            {
-                LogInit("navigation: blocked " + Truncate(e.Uri) + " (opening it externally)");
-                Program.OpenExternal(e.Uri);
-            }
-            else
-            {
-                // about:blank and friends are the engine's own business, not the user's.
-                LogInit("navigation: refused " + Truncate(e.Uri));
-            }
-        }
-
-        private static bool IsWeb(string uri)
-        {
-            if (string.IsNullOrEmpty(uri))
-            {
-                return false;
-            }
-            return uri.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                uri.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
-        }
-
-        /// <summary>
-        /// A target="_blank" link with nobody listening gets a WebView2 popup window,
-        /// which has no chrome and cannot be closed from the page. Handing it to the
-        /// system browser is what the user meant by "open this".
-        /// </summary>
-        private void OnNewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs e)
-        {
-            e.Handled = true;
-            if (IsWeb(e.Uri))
-            {
-                LogInit("navigation: new window " + Truncate(e.Uri) + " (opening it externally)");
-                Program.OpenExternal(e.Uri);
-            }
-            else
-            {
-                LogInit("navigation: refused new window " + Truncate(e.Uri));
-            }
-        }
-
-        /// <summary>
-        /// Whether a URL is a page the flyout can be left sitting on. Same origin is
-        /// not enough: the dashboard's own JSON endpoints live there too, and a bare
-        /// API response has no chrome to navigate back with - that is exactly how the
-        /// panel used to get stranded.
-        /// </summary>
-        private static bool IsDashboard(string uri)
-        {
-            if (string.IsNullOrEmpty(uri))
-            {
-                return false;
-            }
-            if (!uri.StartsWith(ServerHost.BaseUrl, StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-            string path = uri.Substring(ServerHost.BaseUrl.Length);
-            return !path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase);
-        }
-
-        /// <summary>
-        /// Hiding suspends the WebView instead of destroying it: the page keeps its
-        /// state and reopening is a warm resume measured in milliseconds. Node and
-        /// the WebView processes both stay alive, which is what keeps clicks snappy.
-        /// </summary>
-        private void SuspendWebView()
-        {
-            if (!webViewReady || suspended)
-            {
-                return;
-            }
-            suspended = true;
-            BeginSuspend();
-        }
-
-        private async void BeginSuspend()
-        {
-            try
-            {
-                // Chromium only accepts a suspend while the controller reports
-                // itself invisible, and hiding the window is not enough: the
-                // control lives inside a form whose visibility changed, not its own.
-                SetControllerVisible(false);
-                await Task.Delay(120).ConfigureAwait(true);
-                bool ok = await webView.CoreWebView2.TrySuspendAsync().ConfigureAwait(true);
-                if (!ok)
-                {
-                    // One retry: the first attempt can land before the compositor
-                    // has processed the visibility change.
-                    await Task.Delay(150).ConfigureAwait(true);
-                    SetControllerVisible(false);
-                    await Task.Delay(120).ConfigureAwait(true);
-                    ok = await webView.CoreWebView2.TrySuspendAsync().ConfigureAwait(true);
-                }
-                suspendResult = ok ? 1 : 0;
-            }
-            catch
-            {
-                suspendResult = 0;
-            }
-        }
-
-        /// <summary>
-        /// The WinForms control does not expose CoreWebView2Controller publicly, so
-        /// the controller is reached by reflection. Missing members are ignored:
-        /// the control's own VisibleChanged handling is the primary mechanism.
-        /// </summary>
-        private void SetControllerVisible(bool visible)
-        {
-            try
-            {
-                object controller = FindController();
-                if (controller == null)
-                {
-                    return;
-                }
-                PropertyInfo isVisible = controller.GetType().GetProperty("IsVisible");
-                if (isVisible != null)
-                {
-                    isVisible.SetValue(controller, visible, null);
-                }
-            }
-            catch
-            {
-            }
-        }
-
-        /// <summary>
-        /// The WinForms wrapper keeps its CoreWebView2Controller in the private
-        /// field _coreWebView2Controller and never exposes it. Suspend is only
-        /// accepted while the controller is invisible, so that field is the one
-        /// thing this host has to reach into.
-        /// </summary>
-        private object FindController()
-        {
-            Type type = typeof(WebView2);
-            FieldInfo field = type.GetField("_coreWebView2Controller",
-                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            if (field != null)
-            {
-                object value = field.GetValue(webView);
-                if (value != null)
-                {
-                    return value;
-                }
-            }
-            PropertyInfo property = type.GetProperty("CoreWebView2Controller",
-                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-            if (property != null)
-            {
-                return property.GetValue(webView, null);
-            }
-            return null;
-        }
-
-        private void RestoreWebView()
-        {
-            if (!webViewReady)
-            {
-                return;
-            }
-            try
-            {
-                if (suspended)
-                {
-                    webView.CoreWebView2.Resume();
-                    suspended = false;
-                }
-                SetControllerVisible(true);
-            }
-            catch
-            {
-            }
-        }
-
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
                 try
                 {
-                    if (webViewReady)
+                    if (webViewReady && controller != null)
                     {
-                        webView.CoreWebView2.TrySuspendAsync();
+                        controller.CoreWebView2.TrySuspendAsync();
                     }
                 }
                 catch
                 {
                 }
-                if (webView != null)
+                if (controller != null)
                 {
-                    webView.Dispose();
+                    // CoreWebView2Controller is not IDisposable; Close tears down the
+                    // browser and releases the window it was parented to.
+                    controller.Close();
                 }
             }
             base.Dispose(disposing);
