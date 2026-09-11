@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = "D:\dashboard"
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Starter = Join-Path $ProjectRoot "scripts\start-dashboard.ps1"
 $Url = "http://127.0.0.1:$Port/"
 

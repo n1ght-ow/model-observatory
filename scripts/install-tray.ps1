@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = "D:\dashboard"
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Exe         = Join-Path $ProjectRoot "dist\tray\RouterMonitorTray.exe"
 $Icon        = Join-Path $ProjectRoot "public\router-monitor-tray.ico"
 $BuildScript = Join-Path $ProjectRoot "scripts\build-tray.ps1"

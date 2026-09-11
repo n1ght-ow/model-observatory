@@ -34,7 +34,44 @@ namespace RouterMonitorTray
             get { return "http://127.0.0.1:" + port; }
         }
 
-        public static readonly string ProjectRoot = @"D:\dashboard";
+        /// <summary>
+        /// The repository root: where scripts, logs and node_modules live.
+        ///
+        /// Derived from where this executable actually is - it is built into
+        /// <root>\dist\tray\ - so a copy of the tree works from any path. The
+        /// compiled default is only a last resort, and used to be the only answer.
+        /// </summary>
+        public static readonly string ProjectRoot = ResolveProjectRoot();
+
+        private const string DefaultProjectRoot = @"D:\dashboard";
+
+        private static string ResolveProjectRoot()
+        {
+            try
+            {
+                string exe = Process.GetCurrentProcess().MainModule.FileName;
+                string dir = Path.GetDirectoryName(exe);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    // dist\tray -> dist -> root
+                    DirectoryInfo dist = Directory.GetParent(dir);
+                    if (dist != null && dist.Parent != null)
+                    {
+                        string candidate = dist.Parent.FullName;
+                        if (File.Exists(Path.Combine(candidate, "package.json")))
+                        {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Deliberately not logged: LogInit writes under ProjectRoot, which is
+                // the thing being resolved here.
+            }
+            return DefaultProjectRoot;
+        }
 
         private static readonly object Gate = new object();
 

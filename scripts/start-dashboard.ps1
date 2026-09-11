@@ -7,9 +7,32 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$ProjectRoot = "D:\dashboard"
-$NodeExe = "C:\Program Files\nodejs\node.exe"
-$NpmCmd = "C:\Program Files\nodejs\npm.cmd"
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+# Node is resolved rather than hardcoded: a fixed path broke the moment Node moved,
+# which an nvm upgrade or a different drive does without warning.
+function Resolve-NodeExe {
+    $candidates = @()
+    if ($env:NODE_EXE) { $candidates += $env:NODE_EXE }
+    $found = Get-Command node -ErrorAction SilentlyContinue
+    if ($found) { $candidates += $found.Source }
+    $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
+    $candidates += @(
+        (Join-Path $env:ProgramFiles "nodejs\node.exe"),
+        $(if ($pf86) { Join-Path $pf86 "nodejs\node.exe" }),
+        (Join-Path $env:LOCALAPPDATA "Programs\nodejs\node.exe"),
+        (Join-Path $env:APPDATA "nvm\node.exe"),
+        (Join-Path $env:ProgramData "nvm\node.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return $null
+}
+
+$NodeExe = Resolve-NodeExe
+# npm ships beside node, so it is derived rather than guessed separately.
+$NpmCmd = if ($NodeExe) { Join-Path (Split-Path -Parent $NodeExe) "npm.cmd" } else { $null }
 $NextBin = Join-Path $ProjectRoot "node_modules\next\dist\bin\next"
 $LogDir = Join-Path $ProjectRoot "logs"
 $LogFile = Join-Path $LogDir "dashboard.log"
@@ -83,8 +106,16 @@ if ($existing) {
     }
 }
 
-if (-not (Test-Path -LiteralPath $NodeExe)) {
-    Write-DashboardLog "Node.js not found at $NodeExe"
+# An actionable failure: say what was searched and what to do, rather than naming a
+# path that was never going to exist.
+if (-not $NodeExe) {
+    Write-DashboardLog ("Node.js not found. Looked on PATH, then " +
+        "$env:ProgramFiles\nodejs, $env:LOCALAPPDATA\Programs\nodejs and $env:APPDATA\nvm. " +
+        "Install Node.js, or set NODE_EXE to node.exe.")
+    exit 1
+}
+if (-not $NpmCmd -or -not (Test-Path -LiteralPath $NpmCmd)) {
+    Write-DashboardLog "npm.cmd not found beside $NodeExe; install a full Node.js distribution."
     exit 1
 }
 

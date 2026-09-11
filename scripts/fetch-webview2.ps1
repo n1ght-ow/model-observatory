@@ -14,7 +14,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = "D:\dashboard"
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $LibDir = Join-Path $ProjectRoot "tray\lib"
 $versionFile = Join-Path $LibDir "VERSION.txt"
 

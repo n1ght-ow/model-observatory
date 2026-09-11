@@ -28,7 +28,7 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$ProjectRoot = "D:\dashboard"
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Exe = Join-Path $ProjectRoot "dist\tray\RouterMonitorTray.exe"
 $Scratch = Join-Path $ProjectRoot "logs\verify"
 $ShotDir = Join-Path $ProjectRoot "preview\tray"

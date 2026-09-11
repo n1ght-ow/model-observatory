@@ -54,3 +54,7 @@ next-env.d.ts
 /tray/bin/
 dist/tray/
 
+# WebView2 SDK binaries: restored by scripts/fetch-webview2.ps1, which pins the
+# version in tray/lib/VERSION.txt. Tracking 879 KB of DLLs made every SDK bump a
+# binary commit.
+/tray/lib/*.dll

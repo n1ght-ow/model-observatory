@@ -101,8 +101,11 @@ namespace RouterMonitorTray
                     return new Icon(path);
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                // Worth a line: a missing icon means the tray shows the generic
+                // application icon, which looks like a broken install.
+                PanelForm.LogInit("icon: could not load " + fileName + " (" + ex.Message + ")");
             }
             return null;
         }
@@ -639,10 +642,14 @@ namespace RouterMonitorTray
                 autoStart = enabled;
                 itemAutoStart.Checked = enabled;
             }
-            catch
+            catch (Exception ex)
             {
+                // The checkbox has to go back to the truth, and the user has to know the
+                // preference did not stick - silently ticking it would be a lie.
+                PanelForm.LogInit("autostart: " + ex.Message);
                 autoStart = HasAutoStart();
                 itemAutoStart.Checked = autoStart;
+                Notify("开机自动启动设置失败", ex.Message, ToolTipIcon.Warning);
             }
         }
 
@@ -1015,7 +1022,19 @@ namespace RouterMonitorTray
         [DllImport("user32.dll")]
         private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
+        /// <summary>
+        /// Where the crash log goes. Deliberately the same place as the tray log -
+        /// a crash used to land in %TEMP% while everything else was in logs\, so
+        /// "what happened?" meant knowing to look in two unrelated directories.
+        /// </summary>
         private static string CrashLogPath()
+        {
+            return Path.Combine(ServerHost.ProjectRoot, "logs", "tray-crash.log");
+        }
+
+        /// <summary>The crash log from when it lived in %TEMP%, for the uninstaller.
+        /// </summary>
+        internal static string LegacyCrashLogPath()
         {
             return Path.Combine(Path.GetTempPath(), "RouterMonitorTray-crash.log");
         }

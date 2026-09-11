@@ -479,9 +479,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build-tray.ps1            # com
 # a running tray is stopped first: replacing a live executable is what the
 # compiler reports as a bare "access denied"
 powershell -ExecutionPolicy Bypass -File scripts\install-tray.ps1 -Start   # build, install, launch
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-tray.ps1        # undo the above
 ```
 
-The build still uses the .NET Framework compiler that ships with Windows, so no
+The build uses the .NET Framework compiler that ships with Windows, so no
 .NET SDK is needed; the only third-party references are the two WebView2 managed
 assemblies and their native loader, pinned to **1.0.4191.47** — the SDK matching
 the WebView2 Runtime that Edge ships here (152.0.4191.66). `fetch-webview2.ps1`
@@ -525,6 +526,66 @@ fine.
 | `powershell -File scripts\start-dashboard.ps1 -Restart` | stop ours and start it again |
 
 `curl http://127.0.0.1:3000/api/health` reproduces the identity check by hand.
+
+### Where things are found
+
+Nothing is pinned to `D:\dashboard` any more. Every script derives the root from its
+own location (`$PSScriptRoot\..`), and the tray derives it from the executable it is
+running as — it is built into `<root>\dist\tray\`, so a copy of the tree works from
+any path. Verified by building and running a copy at `D:\dashboard-moved`: it built,
+started, and wrote its log to *its own* `logs\`, leaving the original untouched.
+
+Node is resolved rather than hardcoded — `NODE_EXE`, then `PATH`, then the usual
+install locations — because a fixed path broke the moment Node moved, which an nvm
+upgrade does without warning. `npm.cmd` is derived from wherever `node.exe` was found.
+A missing Node now logs what was searched and what to do, instead of naming a path
+that was never going to exist.
+
+### The executable says which build it is
+
+`RouterMonitorTray.exe` used to report `0.0.0.0`, an empty description and no company,
+which is useless for a process that runs all day — there was no way to tell which
+build was on the machine. `tray/AssemblyInfo.cs` supplies the fixed attributes and
+`build-tray.ps1` generates the informational version per build:
+
+```
+FileVersion     : 1.0.0.0
+ProductVersion  : 1.0.0+9e3676e.dirty (2026-09-12 00:40)
+FileDescription : Router Monitor Tray
+ProductName     : Router Monitor
+```
+
+`git` is invoked defensively: a native command writing to stderr is a *terminating*
+error under `ErrorActionPreference = Stop`, so an exported copy of the tree with no
+`.git` could not be built at all. It now degrades to `1.0.0+unknown`.
+
+### Installing and uninstalling
+
+`install-tray.ps1` writes the desktop shortcut, drops the autostart shortcut and
+starts the app. `uninstall-tray.ps1` is its other half and did not exist:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-tray.ps1
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-tray.ps1 -KeepSettings -KeepLogs
+```
+
+It asks the running tray to quit **through the control channel** before touching
+anything, so the WebView is suspended and disposed rather than killed — killing it is
+what leaves `msedgewebview2` children holding the profile lock. It then removes the
+desktop and Startup shortcuts, any legacy scheduled task, and the per-user data
+(`settings.json`, the WebView2 profile, the logs). The repository and the build output
+are left alone, and it says so.
+
+### One place for logs
+
+The crash log lived in `%TEMP%` while everything else was in `logs\`, so "what
+happened?" meant knowing to look in two unrelated directories. Both are under
+`logs\` now — `tray-init.log` and `tray-crash.log`.
+
+Failures that used to disappear into an empty `catch {}` now leave a line: a missing
+tray icon, an autostart shortcut that could not be written (which also raises a
+balloon, because a checkbox that silently does not stick is a lie), a controller
+geometry call that was rejected, a URL the shell refused to open.
 
 ### Verification
 
@@ -572,6 +633,7 @@ uncaught error.
 `install-tray.ps1` writes the desktop shortcut, drops an autostart shortcut in the
 user's Startup folder (an ONLOGON scheduled task would require elevation) and
 starts the app. It also removes the web host's logon task if one exists.
+`uninstall-tray.ps1` reverses all of it — see "Installing and uninstalling" above.
 
 **The browser is never needed.** The tray starts the local server itself if it is
 not already listening and renders the page inside its own WebView2, so the flyout
