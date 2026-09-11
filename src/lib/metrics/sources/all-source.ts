@@ -101,9 +101,13 @@ function labelCodexRow(
 	if (host) {
 		return { ...row, provider: host };
 	}
-	// The rollout named a provider but config.toml declares no base URL for it — the
-	// built-in ones are not written down there. The provider name is still real
-	// information, so it is used rather than discarded into "unknown".
+	// The rollout named a provider, but that provider points somewhere with no host to
+	// show — at the router, which does not answer for an upstream, or nowhere this
+	// machine's config still explains. Only the provider's own name is known.
+	//
+	// This is where rows land when a session predates the current config: a session that
+	// ran before the router existed may have been pointed somewhere that config.toml no
+	// longer records, and guessing would be worse than saying so.
 	if (providerName) {
 		return { ...row, provider: providerLabel(providerName) };
 	}

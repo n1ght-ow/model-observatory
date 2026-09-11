@@ -125,6 +125,10 @@ Names that are not aliases are **not** folded into an "other" bucket: a bucket h
 which upstream it was, and recognition is the point. So `b-ai`, `opencode-go` and
 `openai` keep their names.
 
+A provider that is not declared under `[model_providers]` is resolved through the root
+keys instead — `openai_base_url`, then `base_url` — because that is how Codex redirects its
+built-in providers, and the router relies on exactly that.
+
 `custom` is deliberately absent from the table, because the name means two different
 things: the Codex provider called `custom` points at `api.apikey.fun` while the
 router's `custom` is a routing target with no host evidence. A name-keyed table cannot
@@ -208,9 +212,19 @@ So All splits ownership **by reader**, which makes the three parts disjoint:
 | harness log | every DSH turn | DSH talks to upstreams directly, so nothing else sees it |
 | CC Switch | Codex rows the router never saw | includes the non-DeepSeek models no tab can show |
 
+**A provider id does not tell you where a request went.** The codex-router deliberately
+keeps Codex's built-in `openai` provider id and points `openai_base_url` at its own
+loopback, so a session can read `model_provider = "openai"` and still have been served by
+the router. Deciding ownership by the provider *name* therefore missed ~1,660 rows and
+counted them twice — once from the router log, once from CC Switch. Ownership is decided
+by where the provider actually points, and a session can only count as router traffic if
+its rows fall after the router log begins.
+
 The overlap is real and measurable: with 7 days of data the tabs sum to ~7,500 while All
-reports ~6,500, and `npm run test:e2e` asserts `max(tabs) < all < sum(tabs)` so a
-regression in the de-duplication fails the build rather than quietly inflating a number.
+reports ~6,600, and `npm run test:e2e` asserts `max(tabs) < all < sum(tabs)` in **both**
+the 7-day and all-time windows. The all-time window is the one that matters here: the
+redirected sessions ran before the 7-day window, so only the all-time view notices if they
+stop being de-duplicated. `allScope.dedupedViaRouter` is the count being dropped.
 
 **What it adds.** CC Switch holds Codex rows whose model is not a DeepSeek one —
 `glm-5.3-flash`, `gpt-5.6-luna`, `qwen3.8-flash` and friends. Each per-upstream tab
@@ -713,7 +727,16 @@ echo $LASTEXITCODE   # 1
 | `-MinShotKb` | 20 | that a screenshot is a real capture, not a blank frame |
 
 It also asserts the rendered viewport, that the page is content-ready, that Chromium
-accepted the suspend, and that the browser suite passes. Each run appends a dated row
+accepted the suspend, and that the browser suite passes.
+
+Two things it does deliberately. It **pins the flyout** (`stayOpen`) for the checks that
+need a live document — a flyout hides as soon as it loses activation, which is the
+documented behaviour, but a console running the gate takes focus back, so an unpinned
+panel would show and vanish and every such assertion would fail on timing rather than on
+behaviour. The previous value is restored when the run ends, including on failure. And it
+only asserts the hotkey's *dismiss* half when the tray reports the panel actually reached
+the foreground; a script cannot guarantee that, and claiming a dismissal that never had
+focus to lose would be testing the console. Each run appends a dated row
 with the commit to `docs/tray-evidence.md` — `logs/` is ignored by git, so the summary
 is the part that belongs in the repository.
 

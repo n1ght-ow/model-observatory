@@ -810,6 +810,7 @@ namespace RouterMonitorTray
             AddLine(lines, fields, "version", Program.Version());
             AddLine(lines, fields, "pid", Process.GetCurrentProcess().Id.ToString());
             AddLine(lines, fields, "panel visible", panel.Visible ? "yes" : "no");
+            AddLine(lines, fields, "panel foreground", panel.IsForeground ? "yes" : "no");
             AddLine(lines, fields, "webview ready", panel.IsContentReady ? "yes" : "no");
             AddLine(lines, fields, "webview failed", panel.WebViewFailed ? "yes" : "no");
             AddLine(lines, fields, "suspend", panel.SuspendState);

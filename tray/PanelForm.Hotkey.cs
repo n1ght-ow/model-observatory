@@ -69,6 +69,28 @@ namespace RouterMonitorTray
         }
 
         /// <summary>
+        /// Whether this panel is the foreground window.
+        ///
+        /// Reported over the channel because it decides what the hotkey does — it hides a
+        /// panel that is in front and summons one that is not — and that difference cannot
+        /// be observed from outside the process.
+        /// </summary>
+        public bool IsForeground
+        {
+            get
+            {
+                try
+                {
+                    return IsHandleCreated && GetForegroundWindow() == Handle;
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>
         /// Applies a combination. Returns false when it could not be registered, which
         /// is nearly always because another program already owns it - the panel stays
         /// usable either way, because a hotkey is a convenience, not a dependency.

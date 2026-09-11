@@ -87,22 +87,52 @@ async function main() {
 
 	// The whole point of All is that it is a union, not a sum: the tabs overlap, so
 	// "all equals the sum" would mean the de-duplication silently stopped working.
-	const perTab = {};
-	for (const source of ["deepseek", "router", "harness", "all"]) {
-		const body = await (await fetch(`${BASE}/api/metrics?source=${source}&days=7`)).json();
-		perTab[source] = body.window.requests;
+	//
+	// Both windows are checked. The 7-day view alone is not enough: the sessions the
+	// router redirected through itself ran in a period that has since scrolled out of
+	// the 7-day window, so only the all-time view notices if they stop being de-duped.
+	for (const window of ["7", "all"]) {
+		const perTab = {};
+		for (const source of ["deepseek", "router", "harness", "all"]) {
+			const body = await (
+				await fetch(`${BASE}/api/metrics?source=${source}&days=${window}`)
+			).json();
+			perTab[source] = body.window.requests;
+		}
+		const sum = perTab.deepseek + perTab.router + perTab.harness;
+		const max = Math.max(perTab.deepseek, perTab.router, perTab.harness);
+		const label = window === "all" ? "all time" : `${window} days`;
+		check(
+			`all is smaller than the sum of the tabs (${label})`,
+			perTab.all < sum,
+			`all=${perTab.all} sum=${sum}`
+		);
+		check(
+			`all is larger than any single tab (${label})`,
+			perTab.all > max,
+			`all=${perTab.all} max=${max}`
+		);
 	}
-	const sum = perTab.deepseek + perTab.router + perTab.harness;
-	const max = Math.max(perTab.deepseek, perTab.router, perTab.harness);
+
+	// All is assembled from three disjoint readers, so its own accounting has to add up
+	// to the total it reports. If a reader's rows were double counted this would still
+	// hold — but the sum-of-tabs check above would not — so the two together pin it.
+	const scopeBody = await (
+		await fetch(`${BASE}/api/metrics?source=all&days=all`)
+	).json();
+	const scopeSum =
+		scopeBody.allScope.sources.router +
+		scopeBody.allScope.sources.harness +
+		scopeBody.allScope.sources.codexDirect;
 	check(
-		"all is smaller than the sum of the tabs",
-		perTab.all < sum,
-		`all=${perTab.all} sum=${sum}`
+		"all's readers add up to its total",
+		scopeSum === scopeBody.window.requests,
+		`${scopeSum} vs ${scopeBody.window.requests}`
 	);
 	check(
-		"all is larger than any single tab",
-		perTab.all > max,
-		`all=${perTab.all} max=${max}`
+		"all de-duplicates the sessions the router served",
+		scopeBody.allScope.dedupedViaRouter > 0,
+		`${scopeBody.allScope.dedupedViaRouter} rows dropped`
 	);
 	check(
 		"all reports no combined cost",

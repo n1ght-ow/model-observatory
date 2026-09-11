@@ -58,6 +58,10 @@ it pass, and do not describe something as measured when it was not.
   leaves `msedgewebview2` children holding the profile lock.
 - The flyout must stay on dashboard pages. Same origin is not enough: `/api/` lives there
   too, and a bare JSON response has no way back.
+- The codex-router keeps the built-in `openai` provider id and points `openai_base_url`
+  at its own loopback. A session can therefore say `model_provider = "openai"` and still
+  have gone through the router — so "did this go through the router" is answered by where
+  the provider *points*, not by its name. Getting this wrong counted ~1,660 rows twice.
 
 ## Style
 

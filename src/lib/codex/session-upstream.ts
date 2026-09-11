@@ -87,7 +87,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** `[model_providers.x]` blocks → provider name and base URL. */
+/** `[model_providers.x]` blocks -> provider name and base URL. */
 function parseProviderBaseUrls(toml: string): Map<string, string> {
 	const urls = new Map<string, string>();
 	let current: string | null = null;
@@ -110,6 +110,80 @@ function parseProviderBaseUrls(toml: string): Map<string, string> {
 		}
 	}
 	return urls;
+}
+
+/**
+ * The root-level URLs that redirect Codex built-in providers.
+ *
+ * `openai` is not declared under `[model_providers]` because it is built in, so its
+ * target is only written down here. The codex-router relies on exactly that: it keeps
+ * the built-in `openai` provider id and points `openai_base_url` at its own loopback,
+ * which is why a session can say `model_provider = "openai"` and still have gone
+ * through the router.
+ */
+function parseRootBaseUrls(toml: string): { baseUrl: string | null; openaiBaseUrl: string | null } {
+	let baseUrl: string | null = null;
+	let openaiBaseUrl: string | null = null;
+	let inSection = false;
+	for (const line of toml.split(/\r?\n/)) {
+		if (/^\s*\[/.test(line)) {
+			inSection = true;
+			continue;
+		}
+		if (inSection) {
+			continue;
+		}
+		const openai = line.match(/^\s*openai_base_url\s*=\s*"([^"]+)"/);
+		if (openai) {
+			openaiBaseUrl = openai[1];
+			continue;
+		}
+		const base = line.match(/^\s*base_url\s*=\s*"([^"]+)"/);
+		if (base) {
+			baseUrl = base[1];
+		}
+	}
+	return { baseUrl, openaiBaseUrl };
+}
+
+/**
+ * The base URL a provider will actually use.
+ *
+ * Declared providers answer for themselves. The built-in ones do not appear under
+ * `[model_providers]`, so `openai` falls back to the root `openai_base_url`, then to the
+ * root `base_url` — which is precisely how Codex redirects it.
+ */
+function effectiveBaseUrl(
+	provider: string,
+	declared: Map<string, string>,
+	root: { baseUrl: string | null; openaiBaseUrl: string | null }
+): string | null {
+	const own = declared.get(provider);
+	if (own) {
+		return own;
+	}
+	if (provider === "openai") {
+		return root.openaiBaseUrl ?? root.baseUrl;
+	}
+	return null;
+}
+
+/**
+ * Whether a base URL points at the local router rather than a real upstream.
+ *
+ * This is how "did this session go through the router" is answered for providers that
+ * are redirected to a loopback address, which the provider id alone does not tell you.
+ */
+function isLoopback(url: string | null): boolean {
+	if (!url) {
+		return false;
+	}
+	try {
+		const host = new URL(url).hostname;
+		return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+	} catch {
+		return false;
+	}
 }
 
 /** The hostname of a base URL, or null when it cannot be parsed. */
@@ -244,6 +318,8 @@ function classify(
 	rows: readonly CodexRow[],
 	providers: Map<string, string>,
 	nativeProviders: Set<string>,
+	providerBaseUrls: Map<string, string>,
+	rootUrls: { baseUrl: string | null; openaiBaseUrl: string | null },
 	providerHosts: Map<string, string>,
 	routerEvents: RouterEvent[]
 ): CodexSessionIndex {
@@ -251,21 +327,8 @@ function classify(
 	const upstreams = new Map<string, CodexUpstream>();
 	const routerIndex = buildRouterIndex(routerEvents);
 
-	// Which sessions went through the router is a property of the rollout header alone,
-	// so it is answered from the complete provider map rather than from `rows`.
-	//
-	// Deriving it from `rows` made the answer depend on who asked: the index is cached,
-	// and /deepseek only passes DeepSeek-named rows, so an index built there was missing
-	// every router session whose model was not DeepSeek. A later caller merging all rows
-	// would then fail to recognise those sessions as router traffic and count them twice.
-	const routerSessionIds = new Set<string>();
-	for (const [sessionId, provider] of providers) {
-		if (provider === "codex-router") {
-			routerSessionIds.add(sessionId);
-		}
-	}
-
-	// Rows per session let a router session be judged on its whole traffic.
+	// Rows per session let a router session be judged on its whole traffic, and let a
+	// session be placed in time against the router log below.
 	const perSession = new Map<string, CodexRow[]>();
 	for (const row of rows) {
 		const bucket = perSession.get(row.sessionId);
@@ -273,6 +336,46 @@ function classify(
 			bucket.push(row);
 		} else {
 			perSession.set(row.sessionId, [row]);
+		}
+	}
+
+	// When the router log begins. CC Switch holds rows from before it existed, and a
+	// request cannot have gone through a router that was not running yet.
+	let routerStartMs = Number.POSITIVE_INFINITY;
+	for (const event of routerEvents) {
+		const time = Date.parse(event.at);
+		if (Number.isFinite(time) && time < routerStartMs) {
+			routerStartMs = time;
+		}
+	}
+
+	// Which sessions went through the router, answered from the complete provider map
+	// rather than from the rows the caller happened to pass: the index is cached, and
+	// /deepseek passes only DeepSeek-named rows, so an index built there would be missing
+	// router sessions whose model was not DeepSeek.
+	//
+	// The provider id alone is not enough. The codex-router deliberately keeps the
+	// built-in `openai` provider and points `openai_base_url` at its own loopback, so a
+	// session can read `model_provider = "openai"` and still have gone through the
+	// router. What decides it is where the provider actually points.
+	const routerSessionIds = new Set<string>();
+	for (const [sessionId, provider] of providers) {
+		if (!isLoopback(effectiveBaseUrl(provider, providerBaseUrls, rootUrls))) {
+			continue;
+		}
+		const sessionRows = perSession.get(sessionId);
+		if (!sessionRows) {
+			// No rows for this session in this call, so nothing to place in time. The
+			// provider is redirected at the router, so treat it as router traffic.
+			routerSessionIds.add(sessionId);
+			continue;
+		}
+		const earliest = sessionRows.reduce(
+			(min, row) => Math.min(min, row.createdAt * 1000),
+			Number.POSITIVE_INFINITY
+		);
+		if (earliest >= routerStartMs) {
+			routerSessionIds.add(sessionId);
 		}
 	}
 
@@ -410,20 +513,37 @@ export async function getCodexSessionIndex(
 		readRouterEvents(),
 	]);
 	const baseUrls = parseProviderBaseUrls(config);
+	const rootUrls = parseRootBaseUrls(config);
 	const nativeProviders = new Set<string>();
 	const providerHosts = new Map<string, string>();
-	for (const [name, url] of baseUrls) {
+	// Every provider a session could name, not only the declared ones: a built-in like
+	// openai is redirected from the root keys and still has a real host to name.
+	for (const name of new Set(providers.values())) {
+		const url = effectiveBaseUrl(name, baseUrls, rootUrls);
+		if (!url) {
+			continue;
+		}
 		if (isDeepSeekHost(url)) {
 			nativeProviders.add(name);
 		}
-		// The router runs on localhost, so its "host" says nothing about the upstream
-		// and is left out; those rows are labelled from the router's own event log.
-		const host = hostOf(url);
-		if (host && host !== "127.0.0.1" && host !== "localhost") {
-			providerHosts.set(name, host);
+		// A loopback URL says nothing about the upstream - the router resolves that, and
+		// its own event log names it - so only real hosts are recorded here.
+		if (!isLoopback(url)) {
+			const host = hostOf(url);
+			if (host) {
+				providerHosts.set(name, host);
+			}
 		}
 	}
-	const value = classify(rows, providers, nativeProviders, providerHosts, routerEvents);
+	const value = classify(
+		rows,
+		providers,
+		nativeProviders,
+		baseUrls,
+		rootUrls,
+		providerHosts,
+		routerEvents
+	);
 	cache = { at: Date.now(), value };
 	return value;
 }
