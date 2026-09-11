@@ -2,6 +2,7 @@ using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Drawing;
 using System.IO;
 using System.Management;
@@ -26,6 +27,8 @@ namespace RouterMonitorTray
         private readonly ControlServer control;
         private ToolStripMenuItem itemAutoStart;
         private ToolStripMenuItem itemPin;
+        private ToolStripMenuItem itemTopMost;
+        private ToolStripMenuItem itemSize;
         private readonly Icon trayIcon;
         private bool disposed;
         private bool autoStart;
@@ -45,6 +48,7 @@ namespace RouterMonitorTray
             // so the window handle has to exist from startup - not only once somebody
             // has opened the panel.
             panel.EnsureHandle();
+            panel.StayOpen = SettingsStore.Current.stayOpen;
             menu = BuildMenu();
 
             notifyIcon = new NotifyIcon();
@@ -107,11 +111,46 @@ namespace RouterMonitorTray
             // The data-source switcher used to live here because the hand-drawn
             // panel could not host one. The real page has its own switcher in the
             // header, so the tray no longer duplicates it.
+            TraySettings settings = SettingsStore.Current;
+
             ToolStripMenuItem pin = new ToolStripMenuItem("固定面板");
             pin.CheckOnClick = true;
-            pin.Click += delegate { panel.StayOpen = pin.Checked; };
+            pin.Checked = settings.stayOpen;
+            pin.Click += delegate
+            {
+                panel.StayOpen = pin.Checked;
+                settings.stayOpen = pin.Checked;
+                SettingsStore.Save();
+            };
             strip.Items.Add(pin);
             itemPin = pin;
+
+            ToolStripMenuItem top = new ToolStripMenuItem("窗口置顶");
+            top.CheckOnClick = true;
+            top.Checked = settings.topMost;
+            top.Click += delegate { panel.ApplyTopMost(top.Checked); };
+            strip.Items.Add(top);
+            itemTopMost = top;
+
+            // One entry per drawn size. The layout is never on this menu, because
+            // the layout never changes - only the size it is drawn at.
+            ToolStripMenuItem size = new ToolStripMenuItem("面板大小");
+            double[] choices = new double[] { 0.70, 0.85, 1.00 };
+            for (int i = 0; i < choices.Length; i++)
+            {
+                double choice = choices[i];
+                ToolStripMenuItem entry = new ToolStripMenuItem((int)Math.Round(choice * 100) + "%");
+                entry.Tag = choice;
+                entry.Click += delegate { ApplyScale(choice); };
+                size.DropDownItems.Add(entry);
+            }
+            strip.Items.Add(size);
+            itemSize = size;
+            RefreshScaleChecks();
+
+            ToolStripMenuItem reset = new ToolStripMenuItem("重置窗口位置");
+            reset.Click += delegate { panel.ForgetPosition(); };
+            strip.Items.Add(reset);
 
             ToolStripMenuItem auto = new ToolStripMenuItem("开机自动启动");
             auto.CheckOnClick = true;
@@ -134,6 +173,134 @@ namespace RouterMonitorTray
             {
                 panel.TogglePanel();
             }
+        }
+
+        /// <summary>Applies a drawn size and keeps the menu's ticks honest.</summary>
+        private void ApplyScale(double value)
+        {
+            panel.ApplyUserScale(value);
+            RefreshScaleChecks();
+        }
+
+        private void RefreshScaleChecks()
+        {
+            if (itemSize == null)
+            {
+                return;
+            }
+            double current = panel.UserScaleValue;
+            for (int i = 0; i < itemSize.DropDownItems.Count; i++)
+            {
+                ToolStripMenuItem entry = itemSize.DropDownItems[i] as ToolStripMenuItem;
+                if (entry != null && entry.Tag != null)
+                {
+                    entry.Checked = Math.Abs(Convert.ToDouble(entry.Tag) - current) < 0.001;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The settings, and the one place they can be changed while the tray runs.
+        /// The menu calls the same method, so `--ctl config` and a click cannot drift.
+        /// </summary>
+        private ControlResponse HandleConfig(ControlRequest request)
+        {
+            string key = ArgString(request, "key", null);
+            if (string.IsNullOrEmpty(key))
+            {
+                return Complete(OnUi(delegate { return DescribeSettings(); }), 15000, request.id);
+            }
+            string value = ArgString(request, "value", null);
+            if (value == null)
+            {
+                return ControlResponse.Failure(request.id, "config needs 'value' alongside 'key'");
+            }
+            if (string.Equals(key, "port", StringComparison.OrdinalIgnoreCase))
+            {
+                return ControlResponse.Failure(request.id,
+                    "the port is read at startup: edit settings.json and restart");
+            }
+            return Complete(OnUi(delegate
+            {
+                ApplySetting(key, value);
+                return DescribeSettings();
+            }), 15000, request.id);
+        }
+
+        /// <summary>Applies one setting live. Runs on the UI thread.</summary>
+        private void ApplySetting(string key, string value)
+        {
+            TraySettings settings = SettingsStore.Current;
+            if (string.Equals(key, "stayOpen", StringComparison.OrdinalIgnoreCase))
+            {
+                bool flag = ParseBool(value);
+                settings.stayOpen = flag;
+                panel.StayOpen = flag;
+                if (itemPin != null)
+                {
+                    itemPin.Checked = flag;
+                }
+                SettingsStore.Save();
+            }
+            else if (string.Equals(key, "topMost", StringComparison.OrdinalIgnoreCase))
+            {
+                bool flag = ParseBool(value);
+                if (itemTopMost != null)
+                {
+                    itemTopMost.Checked = flag;
+                }
+                panel.ApplyTopMost(flag);
+            }
+            else if (string.Equals(key, "userScale", StringComparison.OrdinalIgnoreCase))
+            {
+                panel.ApplyUserScale(ParseDouble(value, panel.UserScaleValue));
+                RefreshScaleChecks();
+            }
+            else if (string.Equals(key, "dragStripHeight", StringComparison.OrdinalIgnoreCase))
+            {
+                panel.ApplyDragStripHeight((int)Math.Round(ParseDouble(value, panel.DragStripHeightValue)));
+            }
+            else
+            {
+                throw new ArgumentException("'" + key + "' is not a live setting");
+            }
+        }
+
+        /// <summary>The settings as they are right now, in the report's usual shape.</summary>
+        private Dictionary<string, object> DescribeSettings()
+        {
+            TraySettings settings = SettingsStore.Current;
+            List<string> lines = new List<string>();
+            Dictionary<string, object> fields = new Dictionary<string, object>();
+            AddLine(lines, fields, "file", SettingsStore.FilePath());
+            AddLine(lines, fields, "userScale", panel.UserScaleValue.ToString("0.###", CultureInfo.InvariantCulture));
+            AddLine(lines, fields, "dragStripHeight", panel.DragStripHeightValue.ToString(CultureInfo.InvariantCulture));
+            AddLine(lines, fields, "stayOpen", settings.stayOpen ? "true" : "false");
+            AddLine(lines, fields, "topMost", panel.TopMost ? "true" : "false");
+            AddLine(lines, fields, "hasPosition", settings.hasPosition ? "true" : "false");
+            AddLine(lines, fields, "position", settings.hasPosition ? settings.windowX + "," + settings.windowY : "(docked to the tray)");
+            AddLine(lines, fields, "port", settings.port.ToString(CultureInfo.InvariantCulture));
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["lines"] = lines;
+            result["fields"] = fields;
+            return result;
+        }
+
+        private static bool ParseBool(string text)
+        {
+            string value = text == null ? "" : text.Trim().ToLowerInvariant();
+            return value == "true" || value == "1" || value == "yes" || value == "on";
+        }
+
+        private static double ParseDouble(string text, double fallback)
+        {
+            double value;
+            if (!string.IsNullOrEmpty(text) && double.TryParse(text, NumberStyles.Float,
+                CultureInfo.InvariantCulture, out value))
+            {
+                return value;
+            }
+            return fallback;
         }
 
         private void OpenWeb()
@@ -251,6 +418,7 @@ namespace RouterMonitorTray
             control.Register("reload", HandleReload);
             control.Register("probe", HandleProbe);
             control.Register("shot", HandleShot);
+            control.Register("config", HandleConfig);
             control.Register("quit", HandleQuit);
         }
 
@@ -1103,6 +1271,10 @@ namespace RouterMonitorTray
                 output = shot;
             }
 
+            // The port is a preference now, so it has to be known before anything
+            // asks whether the dashboard is up.
+            ServerHost.Port = SettingsStore.Current.port;
+
             string report = ArgValue(args, "--report");
             string page = ArgValue(args, "--page");
             int waitMs = ArgInt(ArgValue(args, "--wait"), 60000);
@@ -1115,7 +1287,7 @@ namespace RouterMonitorTray
             //    capability.
             if (!string.IsNullOrEmpty(ctl))
             {
-                return ForwardCommand(ctl, null, report);
+                return ForwardCommand(ctl, ArgPairs(args, "--arg"), report);
             }
 
             // 2. Diagnostics prefer the tray that is already running. Standing up a
@@ -1329,6 +1501,31 @@ namespace RouterMonitorTray
                 }
             }
             return null;
+        }
+
+        /// <summary>Collects repeated `--arg name=value` pairs into one argument bag.</summary>
+        private static Dictionary<string, object> ArgPairs(string[] args, string name)
+        {
+            Dictionary<string, object> pairs = null;
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (!string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                string text = args[i + 1];
+                int split = text.IndexOf('=');
+                if (split <= 0)
+                {
+                    continue;
+                }
+                if (pairs == null)
+                {
+                    pairs = new Dictionary<string, object>();
+                }
+                pairs[text.Substring(0, split)] = text.Substring(split + 1);
+            }
+            return pairs;
         }
 
         private static int ArgInt(string raw, int fallback)

@@ -273,9 +273,40 @@ panel and were what actually blocked dragging:
   sends, so the move loop started and then died. `SC_SIZE` is still blocked.
 
 The anchor is now only the *initial* placement. Once the window has been moved by
-hand it keeps that position, and `KeepOnScreen` pulls it back into view if it is ever
-dragged off the desktop — the panel has no taskbar entry, so an off-screen window
-would otherwise be unrecoverable.
+hand it keeps that position — across restarts, because the drag writes it to
+`settings.json` — and `KeepOnScreen` pulls it back into view if it is ever dragged
+off the desktop: the panel has no taskbar entry, so an off-screen window would
+otherwise be unrecoverable. **重置窗口位置** in the tray menu forgets the position
+and docks the panel back to the tray.
+
+### Settings
+
+Everything that was a compile-time constant and turned out to be a preference
+lives in `%LOCALAPPDATA%\RouterMonitorTray\settings.json`:
+
+| Field | Default | What it is |
+| --- | --- | --- |
+| `userScale` | `0.85` | drawn size as a fraction of the browser's own; the CSS viewport never changes |
+| `dragStripHeight` | `20` | height of the grip strip above the page, in physical pixels |
+| `stayOpen` | `false` | whether the flyout survives losing focus (固定面板) |
+| `topMost` | `true` | always-on-top (窗口置顶) |
+| `hasPosition`, `windowX`, `windowY` | unset | where the panel was last dragged to |
+| `port` | `3000` | the port the local dashboard answers on |
+
+The tray menu changes the first four live — **固定面板**, **窗口置顶**, **面板大小**
+(70% / 85% / 100%) and **重置窗口位置** — and each writes the file immediately.
+`userScale` and `dragStripHeight` can also be changed over the channel, which is
+the same code path the menu uses, so a click and a script cannot drift:
+
+```powershell
+dist\tray\RouterMonitorTray.exe --ctl config --arg key=userScale --arg value=1.0
+```
+
+`port` is read at startup (the host script is launched with `-Port`), so changing
+it needs a restart; asking the channel for it returns that as an error rather than
+pretending. A missing file is the defaults; a damaged one is the defaults plus a
+line in `logs/tray-init.log` and the bad file kept beside it as `settings.json.bad`.
+The tray never fails to start because of this file.
 
 ### Performance
 
@@ -342,6 +373,8 @@ mode this design exists to avoid.
 powershell -ExecutionPolicy Bypass -File scripts\fetch-webview2.ps1
 
 powershell -ExecutionPolicy Bypass -File scripts\build-tray.ps1            # compile only
+# a running tray is stopped first: replacing a live executable is what the
+# compiler reports as a bare "access denied"
 powershell -ExecutionPolicy Bypass -File scripts\install-tray.ps1 -Start   # build, install, launch
 ```
 
@@ -387,6 +420,8 @@ Tray behaviour:
   it loses focus, `Esc` closes it, and **固定面板** pins it open.
 - Double-click, or pick **打开网页版**, to open the full dashboard in the browser.
 - **立即刷新** reloads the page in place.
+- **固定面板**, **窗口置顶**, **面板大小** and **重置窗口位置** are preferences:
+  they are remembered in `settings.json` and take effect immediately.
 - **开机自动启动** toggles the Startup-folder shortcut.
 - When `http://127.0.0.1:3000` is not answering, the tray starts the hidden host
   itself by running `scripts\start-dashboard.ps1`.
@@ -426,7 +461,16 @@ discoverable without reading the source.
 | `reload` | reload the page in place |
 | `probe` | viewport, DPR, page title, document size, WebView2 core, bridge state |
 | `shot` | `args.path` - save the flyout as it appears on screen |
+| `config` | read the settings, or change one live |
 | `quit` | tear down the way the menu's Quit does |
+
+Arguments are passed with repeated `--arg name=value` pairs, so the channel
+stays generic:
+
+```powershell
+dist\tray\RouterMonitorTray.exe --ctl config
+dist\tray\RouterMonitorTray.exe --ctl config --arg key=userScale --arg value=1.0
+```
 
 Adding a command is **one row in `RegisterControlHandlers()`** in
 `tray/Program.cs` and nothing else: not `Main`, not the menu, not the command

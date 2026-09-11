@@ -26,20 +26,16 @@ namespace RouterMonitorTray
         public const int CssWidth = 1688;
         public const int CssHeight = 935;
 
-        /// <summary>
-        /// How much of the display-scale rendering to use. 1.0 gives the browser's
-        /// own size (a 2532x1402 window at 150% scaling, which fills almost the
-        /// whole screen); 0.7 is a comfortable window that still lays the page out
-        /// at the full 1688x935 CSS viewport, so the layout is untouched and only
-        /// the drawn size changes.
-        /// </summary>
-        private const float UserScale = 0.85f;
+        /// <summary>Smallest and largest drawn size the settings are clamped to.</summary>
+        private const double MinUserScale = 0.5;
+        private const double MaxUserScale = 2.0;
 
         /// <summary>
-        /// Height of the grip strip above the page, in physical pixels. At 150%
-        /// display scaling this is ~13 logical pixels, close to a normal title bar.
+        /// Bounds for the grip strip above the page, in physical pixels. At 150%
+        /// display scaling 20 is ~13 logical pixels, close to a normal title bar.
         /// </summary>
-        private const int DragStripHeight = 20;
+        private const int MinDragStripHeight = 0;
+        private const int MaxDragStripHeight = 60;
 
         private const int ScreenMargin = 24;
         private const int WM_NCHITTEST = 0x0084;
@@ -77,8 +73,10 @@ namespace RouterMonitorTray
         private readonly Label loading;
         private readonly Panel dragStrip;
         private readonly float dpiScale;   // display scale, e.g. 1.5 at 150%
-        private readonly float scale;      // physical pixels per CSS pixel
-        private readonly double webZoom;   // the ZoomFactor that produces it
+        private float userScale;           // drawn size as a fraction of the browser's own
+        private float scale;               // physical pixels per CSS pixel
+        private double webZoom;            // the ZoomFactor that produces it
+        private int dragStripHeight;       // grip strip height, in physical pixels
 
         private bool stayOpen;
         private bool webViewReady;
@@ -168,6 +166,10 @@ namespace RouterMonitorTray
 
         public PanelForm()
         {
+            TraySettings settings = SettingsStore.Current;
+            userScale = (float)settings.userScale;
+            dragStripHeight = settings.dragStripHeight;
+
             dpiScale = DetectDpiScale();
             scale = ComputeScale(dpiScale);
             webZoom = scale / dpiScale;
@@ -175,7 +177,7 @@ namespace RouterMonitorTray
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.Manual;
-            TopMost = true;
+            TopMost = settings.topMost;
             KeyPreview = true;
             Text = "Router Monitor";
             BackColor = Color.FromArgb(255, 255, 255);
@@ -184,7 +186,7 @@ namespace RouterMonitorTray
             // keeps its full 1688x935 CSS viewport and nothing is covered.
             ClientSize = new Size(
                 (int)Math.Round(CssWidth * scale),
-                (int)Math.Round(CssHeight * scale) + DragStripHeight);
+                (int)Math.Round(CssHeight * scale) + dragStripHeight);
 
             // Positions are assigned explicitly rather than by docking. Docking a
             // Top strip in front of a Fill sibling does not reserve its height (the
@@ -214,6 +216,7 @@ namespace RouterMonitorTray
             Controls.Add(loading);
             Controls.Add(dragStrip);
             LayoutChildren();
+            RestoreSavedPosition();
         }
 
         protected override void OnLayout(LayoutEventArgs e)
@@ -236,7 +239,7 @@ namespace RouterMonitorTray
             }
             int w = ClientSize.Width;
             int h = ClientSize.Height;
-            int strip = Math.Min(DragStripHeight, h);
+            int strip = Math.Min(dragStripHeight, h);
             int pageH = Math.Max(0, h - strip);
 
             dragStrip.Bounds = new Rectangle(0, 0, w, strip);
@@ -278,6 +281,7 @@ namespace RouterMonitorTray
         private void OnDragStripMouseUp(object sender, MouseEventArgs e)
         {
             KeepOnScreen();
+            SettingsStore.RememberPosition(Left, Top);
         }
 
         /// <summary>
@@ -342,11 +346,11 @@ namespace RouterMonitorTray
         /// when the scaled panel would not fit the work area, by lowering both the
         /// window size and ZoomFactor together so the CSS viewport stays 1688x935.
         /// </summary>
-        private static float ComputeScale(float dpiScale)
+        private float ComputeScale(float dpi)
         {
-            // Aim for 70% of the browser's own size, then give up size (never the
-            // layout) if that still would not fit the work area.
-            float fit = dpiScale;
+            // Take the user's fraction of the browser's own size, then give up size
+            // (never the layout) if that still would not fit the work area.
+            float fit = dpi;
             try
             {
                 Screen screen = Screen.PrimaryScreen;
@@ -354,7 +358,7 @@ namespace RouterMonitorTray
                 {
                     Rectangle work = screen.WorkingArea;
                     float fitX = (work.Width - ScreenMargin) / (float)CssWidth;
-                    float fitY = (work.Height - ScreenMargin - DragStripHeight) / (float)CssHeight;
+                    float fitY = (work.Height - ScreenMargin - dragStripHeight) / (float)CssHeight;
                     fit = Math.Min(fitX, fitY);
                 }
             }
@@ -362,7 +366,7 @@ namespace RouterMonitorTray
             {
             }
 
-            float value = Math.Min(dpiScale * UserScale, fit);
+            float value = Math.Min(dpi * userScale, fit);
             if (value < 0.25f)
             {
                 value = 0.25f;
@@ -394,6 +398,117 @@ namespace RouterMonitorTray
         {
             anchor = position;
             Location = position;
+        }
+
+        /// <summary>Drawn size as a fraction of the browser's own; the CSS viewport never changes.</summary>
+        public double UserScaleValue
+        {
+            get { return userScale; }
+        }
+
+        /// <summary>The height of the strip above the page, in physical pixels.</summary>
+        public int DragStripHeightValue
+        {
+            get { return dragStripHeight; }
+        }
+
+        /// <summary>Puts the panel back where the user last left it, if they ever moved it.</summary>
+        public void RestoreSavedPosition()
+        {
+            TraySettings settings = SettingsStore.Current;
+            if (!settings.hasPosition)
+            {
+                return;
+            }
+            userMoved = true;
+            AnchorTo(new Point(settings.windowX, settings.windowY));
+        }
+
+        /// <summary>Docks the panel to the tray again and forgets the saved position.</summary>
+        public void ForgetPosition()
+        {
+            userMoved = false;
+            SettingsStore.ForgetPosition();
+            PositionNearTray();
+        }
+
+        /// <summary>
+        /// Changes the drawn size without touching the layout: the window and the
+        /// ZoomFactor move together so the CSS viewport stays 1688x935. Applied live,
+        /// so the menu can change it while the panel is open.
+        /// </summary>
+        public void ApplyUserScale(double value)
+        {
+            if (value < MinUserScale)
+            {
+                value = MinUserScale;
+            }
+            if (value > MaxUserScale)
+            {
+                value = MaxUserScale;
+            }
+            userScale = (float)value;
+            SettingsStore.Current.userScale = userScale;
+            Rescale();
+            SettingsStore.Save();
+        }
+
+        /// <summary>Changes the height of the grip strip above the page, live.</summary>
+        public void ApplyDragStripHeight(int value)
+        {
+            if (value < MinDragStripHeight)
+            {
+                value = MinDragStripHeight;
+            }
+            if (value > MaxDragStripHeight)
+            {
+                value = MaxDragStripHeight;
+            }
+            dragStripHeight = value;
+            SettingsStore.Current.dragStripHeight = value;
+            Rescale();
+            SettingsStore.Save();
+        }
+
+        /// <summary>Turns always-on-top on or off, live.</summary>
+        public void ApplyTopMost(bool value)
+        {
+            TopMost = value;
+            SettingsStore.Current.topMost = value;
+            SettingsStore.Save();
+        }
+
+        /// <summary>
+        /// Recomputes the drawn geometry from userScale and dragStripHeight. The CSS
+        /// viewport is the invariant here, never the physical size.
+        /// </summary>
+        private void Rescale()
+        {
+            scale = ComputeScale(dpiScale);
+            webZoom = scale / dpiScale;
+            if (webViewReady)
+            {
+                try
+                {
+                    webView.ZoomFactor = webZoom;
+                }
+                catch (Exception ex)
+                {
+                    LogInit("zoom: " + ex.Message);
+                }
+            }
+            ClientSize = new Size(
+                (int)Math.Round(CssWidth * scale),
+                (int)Math.Round(CssHeight * scale) + dragStripHeight);
+            LayoutChildren();
+            if (userMoved)
+            {
+                KeepOnScreen();
+            }
+            else
+            {
+                PositionNearTray();
+            }
         }
 
         /// <summary>

@@ -115,7 +115,7 @@ namespace RouterMonitorTray
         public const int ConnectTimeoutMs = 5000;
         public const int MaxMessageBytes = 4 * 1024 * 1024;
 
-        private static readonly JavaScriptSerializer Serializer = new JavaScriptSerializer();
+        internal static readonly JavaScriptSerializer Serializer = new JavaScriptSerializer();
 
         /// <summary>
         /// Per-user so two accounts on one machine cannot drive each other's tray.

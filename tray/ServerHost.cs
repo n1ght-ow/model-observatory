@@ -17,8 +17,23 @@ namespace RouterMonitorTray
     /// </summary>
     internal static class ServerHost
     {
-        public const string BaseUrl = "http://127.0.0.1:3000";
-        public const int Port = 3000;
+        private static int port = 3000;
+
+        /// <summary>
+        /// The port the local dashboard answers on. A preference rather than a
+        /// constant, because 3000 is a popular port to find already taken.
+        /// </summary>
+        public static int Port
+        {
+            get { return port; }
+            set { port = value; }
+        }
+
+        public static string BaseUrl
+        {
+            get { return "http://127.0.0.1:" + port; }
+        }
+
         public static readonly string ProjectRoot = @"D:\dashboard";
 
         private static readonly object Gate = new object();
@@ -120,7 +135,7 @@ namespace RouterMonitorTray
 
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = shell;
-                psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + "\"";
+                psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + "\" -Port " + port;
                 psi.UseShellExecute = false;
                 psi.CreateNoWindow = true;
                 psi.WorkingDirectory = ProjectRoot;

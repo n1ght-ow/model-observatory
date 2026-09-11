@@ -57,6 +57,7 @@ namespace RouterMonitorTray
             Add(lines, fields, "content ready", panel.IsContentReady ? "yes" : "no");
             Add(lines, fields, "webview failed", panel.WebViewFailed ? "yes" : "no");
             Add(lines, fields, "panel visible", panel.Visible ? "yes" : "no");
+            Add(lines, fields, "panel rect", panel.Left + "," + panel.Top + " " + panel.Width + "x" + panel.Height);
 
             return Result(lines, fields);
         }

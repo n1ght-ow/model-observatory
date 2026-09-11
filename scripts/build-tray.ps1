@@ -50,6 +50,15 @@ if (-not (Test-Path -LiteralPath $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
+# Replacing a running executable fails with a bare "access denied" from the
+# compiler, which says nothing about the cause. Stop the tray first, and say so.
+$running = Get-Process -Name "RouterMonitorTray" -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Host ("stopping the running tray (pid {0}) to replace the executable" -f ($running.Id -join ','))
+    $running | Stop-Process -Force
+    Start-Sleep -Milliseconds 600
+}
+
 # Refresh the tray icon so the executable always embeds the latest art.
 $iconScript = Join-Path $ProjectRoot "scripts\generate-tray-icon.py"
 if (Test-Path -LiteralPath $iconScript) {
