@@ -232,7 +232,7 @@ place by a pixel-diff tool that scored the panel against browser screenshots.
 
 |  | Hand-drawn (before) | WebView2 (now) |
 | --- | --- | --- |
-| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port; 4,571 / 10 now — see "Where the extra lines went" |
+| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port; 4,648 / 11 now — see "Where the extra lines went" |
 | Compiler | `csc.exe` (.NET Framework) | `csc.exe` — unchanged |
 | Executable | 530 KB | 55 KB (+ WebView2 DLLs) |
 | Fidelity | hand-matched, pixel by pixel | identical by construction |
@@ -304,32 +304,38 @@ intentional and is named in the source.
 #### Where the extra lines went
 
 The port left the tray at 1,592 lines in three files, all of it window chrome and
-WebView plumbing. It is 4,571 lines in ten files now. **This is more, and the target
-was less.** The honest breakdown:
+WebView plumbing. It is **4,648 lines in eleven files** now. **This is more, and the
+target was less.** The objective asked for `tray/` to fit in 1,976 lines; it does not.
+The honest breakdown:
 
-| | Lines |
+| File | Lines |
 | --- | --- |
-| `Program.cs` (was 1,805) | 1,506 |
-| `PanelForm` (4 partials, was 1,454 in one) | 1,739 |
+| `Program.cs` (was 1,805) | 1,525 |
+| `PanelForm.cs` — chrome, layout | 615 |
+| `PanelForm.WebView.cs` — WebView lifecycle | 531 |
 | `ControlChannel.cs` | 373 |
-| `ServerHost.cs` | 333 |
+| `ServerHost.cs` | 370 |
+| `PanelForm.Bridge.cs` — protocol, guards | 299 |
 | `Diagnostics.cs` | 295 |
+| `PanelForm.Scaling.cs` — DPI, zoom | 294 |
 | `Settings.cs` | 184 |
 | `ProcessSampler.cs` | 141 |
+| `AssemblyInfo.cs` | 21 |
 
 What did *not* grow is the diagnostic shell. `CliContext` — 460 lines of headless
 driver that shipped inside the executable and duplicated probe/shot/cycle — is **gone
-entirely**; `Program.cs` went from 1,805 lines to 1,506 *while gaining* every
-forwarding path above. There is no diagnostic code outside `Diagnostics.cs`, and no
+entirely**; `Program.cs` is 1,525 lines *while gaining* every forwarding path above,
+having once been 1,805. There is no diagnostic code outside `Diagnostics.cs`, and no
 `--mode` to add when a capability arrives: it is one row in
 `RegisterControlHandlers()`, demonstrated above.
 
-The rest of the growth is capability that did not exist: a control channel, persisted
-settings, process sampling, and the measurements themselves. Roughly 1,300 lines of
-the 4,571 are the channel and the diagnostics. Whether that is worth it is a judgement
-call, but it is not a claim that the tray got smaller — the objective asked for
-`tray/` to fit in 1,976 lines, and it does not. What it does fit is the part that
-mattered: a new capability is one table row, and verification is a command that fails.
+So where did the rest come from? Capability that did not exist — a control channel
+(373), persisted settings (184), process sampling (141), the measurements themselves
+(295) — plus ~400 lines of comments explaining decisions that had been silent. Roughly
+1,000 lines of the 4,648 are the channel and the diagnostics. Whether that is worth it
+is a judgement call, and this is not a claim that the tray got smaller. What did get
+smaller is the cost of the next change: a new capability is one table row, and
+verification is a command that fails rather than a report somebody has to interpret.
 
 ### Viewport and size
 
@@ -415,20 +421,27 @@ to [`docs/tray-evidence.md`](docs/tray-evidence.md). The tray process is the one
 "WebView2" counts only the Chromium processes descended from it, so other
 applications' WebView2 instances are never included.
 
-| Scenario | Measured | Target |
+Every number below is produced by `verify-tray.ps1` on this machine
+(2560x1600 @ 150%, one display). The figures quoted for the current build are from
+the `docs/tray-evidence.md` row for commit `4cf9dd1`; re-run the gate to reproduce them.
+
+| Scenario | Measured | Gate threshold |
 | --- | --- | --- |
-| Click tray icon → panel visible | same frame (a `Show()`) | 200 ms |
-| Drag the grip → window moved | follows the pointer exactly (simulated drag: 225x75 px input → 225x75 px moved) | — |
-| **Reopen after suspend** (script round-trip into the resumed renderer) | **60–73 ms** | 200 ms |
-| **In-panel navigation** (click a sidebar link → route changed) | **45–47 ms** | no perceptible stall |
-| First open of the process: navigation complete → **interactive** | 556 ms → **+327 ms = ~0.9 s** | see note |
-| Same, where the Node host also has to start | 2.6–4.2 s, with a loading label | 5 s |
-| Hidden CPU | **0 ms per 0.5 s sample** (median) | ≈ 0 |
+| Click tray icon → panel visible | same frame (a `Show()`) | — |
+| Drag the grip → window moved | follows the pointer exactly | — |
+| **Reopen after suspend** (script round-trip into the resumed renderer) | **13–24 ms** | `-MaxReopenMs` 200 |
+| **Route change** (click a sidebar link → route changed) | **20–34 ms** | `-MaxRouteChangeMs` 500 |
+| Rendering viewport / DPR | 1689x936 CSS px at DPR 1.275 | ±1 px of 1688x935 |
+| Hidden CPU | **0 ms per 0.5 s sample** (median of 30) | `-MaxHiddenCpuMs` 20 |
 | Visible CPU | 0–450 ms per 0.5 s sample | — |
-| Tray process, panel never opened | **32 MB, zero Chromium processes** | — |
+| Tray process, panel never opened | 32 MB, zero Chromium processes | — |
 | Tray process, panel open | 53–63 MB | — |
-| WebView2 while hidden | 20–27 MB resident / ~220 MB committed | 450 MB |
-| WebView2 while visible | 419–448 MB resident / 368–489 MB committed | 450 MB |
+| WebView2 while hidden | ~27 MB resident / ~220 MB committed | — |
+| WebView2 while visible | 419–449 MB resident / 368–489 MB committed | — |
+
+The viewport is **1689x936 rather than exactly 1688x935** because the window is sized
+in whole physical pixels and the viewport is that divided by the device pixel ratio.
+The gate allows ±1 px and records the measured value instead of rounding it away.
 
 **The reopen and interaction numbers are the ones that matter**, and they are the
 reason this design took the shape it did: the tray adds nothing to the path, so
@@ -444,23 +457,25 @@ a client-side transition. `npm run test:e2e` asserts that cost so a regression s
 up, and asserts the route change either way, so switching the sidebar to `next/link`
 later would not break the suite.
 
-Note on the one target that is not met as literally written: "panel visible → first
-screen interactive ≤ 500 ms" holds for the warm reopen (60 ms, because the page is
-already rendered and hydrated) but **not** for the first open of the process, where
-the page still has to load and hydrate and lands at ~0.9 s. That first open is the
-case the ≤ 5 s budget covers, and it is met with room to spare; reporting 0.9 s
-against a 500 ms budget would be the dishonest framing the goal explicitly forbids.
+**First open is the slow case, and it is not gated.** The warm reopen is 13–24 ms
+because the page is already rendered and hydrated; the *first* open of the process
+has to load and hydrate and lands around 0.9 s, or 2.6–4.2 s when the Node host also
+has to start. `verify-tray.ps1` reports `first content` but sets no threshold on it,
+so those two figures are measurements from earlier runs rather than numbers the gate
+will fail on. Gating them would need a cold-start fixture the suite does not have.
 
 While the panel is hidden the working set collapses to ~27 MB because Windows trims
 a suspended process; the ~220 MB that stays committed is exactly what makes the
-resume 60–73 ms instead of a cold start. Chromium accepts the suspend
-(`suspend hidden: suspended`) and holds it at **zero CPU**.
+resume tens of milliseconds instead of a cold start. Chromium accepts the suspend
+(`suspend hidden: suspended`) and holds it at **zero CPU** — which the gate asserts,
+because it is the whole reason the flyout is suspended rather than destroyed.
 
 Interval-level detail, if a single number is not enough: `--cycle` prints a
 `sample` line every 0.5 s with the process count, resident and committed memory of
 our Chromium processes, the CPU delta since the previous sample, and the tray's own
-working set. Median hidden CPU across 50–60 samples is 0 ms; the median is used
-rather than the mean because startup samples are not representative.
+working set. The median is used rather than the mean because startup samples are not
+representative; the gate samples for at least `-MinHiddenSamples` (10) before it will
+judge, and 30 in a default run.
 
 `/deepseek` is the slowest page to paint at any time (~2.6 s) because that route
 renders its whole report server-side; every other page is under 0.9 s.
