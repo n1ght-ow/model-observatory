@@ -126,6 +126,40 @@ if (-not $commit) { $commit = "(unknown)" }
 $dirty = (& git -C $ProjectRoot status --porcelain 2>$null)
 Say ("commit          : " + $commit + $(if ($dirty) { " + uncommitted changes" } else { "" }))
 
+# ------------------------------------------------- 0b. measure the current build
+# next start reads its build manifest when it starts, so a rebuild under a running
+# server leaves it serving the previous build's chunk names - the flyout would then be
+# measured against stale JavaScript and report on code that no longer exists. The
+# server is restarted (the script rebuilds too, if a source is newer than .next) so
+# every number below belongs to the source in the working tree.
+Say ""
+Say "--- bringing the server onto the current build ---"
+$starter = Join-Path $ProjectRoot "scripts\start-dashboard.ps1"
+# Created through WMI, not Process.Start: a plain child inherits this script's stdout,
+# so anything piping this gate (verify-tray.ps1 | Tee-Object ...) would wait for the
+# server to exit - which it never does. WMI gives a process that is nobody's child.
+$cmdLine = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $starter -Port 3000 -Restart"
+$created = ([wmiclass]"Win32_Process").Create($cmdLine)
+if (-not $created -or $created.ReturnValue -ne 0) {
+    Say ("  warning: could not restart the server (Win32_Process.Create returned " + $(if ($created) { $created.ReturnValue } else { "nothing" }) + ")")
+}
+$healthUrl = "http://127.0.0.1:3000/api/health"
+$serving = $false
+for ($i = 0; $i -lt 240; $i++) {
+    Start-Sleep -Milliseconds 1000
+    try {
+        $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 3
+        if ($response.StatusCode -eq 200 -and $response.Content -match "router-monitor-dashboard") { $serving = $true; break }
+    } catch { }
+}
+Assert-That "server is serving the current build" $serving "waited $i s"
+
+# A tray older than the executable on disk would be measured as if it were current.
+$trayProcess = Get-Process -Name "RouterMonitorTray" -ErrorAction SilentlyContinue | Select-Object -First 1
+$exeWritten = (Get-Item -LiteralPath $Exe).LastWriteTime
+$stale = $false
+if ($trayProcess) { $stale = $trayProcess.StartTime -lt $exeWritten }
+Assert-That "running tray is not older than the executable" (-not $stale) $(if ($trayProcess) { "started " + $trayProcess.StartTime.ToString("HH:mm:ss") + ", exe written " + $exeWritten.ToString("HH:mm:ss") } else { "no tray running" })
 # ---------------------------------------------------------------- 1. the tray
 Say ""
 Say "--- tray ---"
@@ -166,6 +200,51 @@ Assert-That "escape bridge is protocol v1" ($bridge -eq "v1") "$bridge"
 Assert-That "content is ready" ((Read-Field $probe.lines "content ready") -eq "yes") "$(Read-Field $probe.lines 'content ready')"
 Assert-That "webview did not fail" ((Read-Field $probe.lines "webview failed") -eq "no") "$(Read-Field $probe.lines 'webview failed')"
 Assert-That "panel is visible" ((Read-Field $probe.lines "panel visible") -eq "yes") "$(Read-Field $probe.lines 'panel visible')"
+
+# ------------------------------------------------- 2b. flyout page (tray only)
+# Only the tray can run script inside its own WebView, so these are the page
+# behaviours that cannot be checked from a browser at all.
+Say ""
+Say "--- flyout page behaviour ---"
+$evalFile = Join-Path $Scratch "eval.js"
+function Invoke-Eval([string]$script) {
+    [System.IO.File]::WriteAllText($evalFile, $script, (New-Object System.Text.UTF8Encoding($false)))
+    $result = Invoke-Ctl "eval" @("--arg", ("file=" + $evalFile))
+    $value = Read-Field $result.lines "result"
+    if (-not $value) { return "" }
+    return $value
+}
+
+# Selected by data-tray-control rather than aria-label: this script is ASCII-only on
+# purpose, because Windows PowerShell reads a BOM-less .ps1 with the ANSI codepage and
+# would mangle a Chinese selector into something that matches nothing.
+$controlsScript = @'
+(function(){
+  var close = document.querySelectorAll('[data-tray-control="close"]').length;
+  var pin = document.querySelectorAll('[data-tray-control="pin"]').length;
+  return String(close) + "|" + String(pin);
+})()
+'@
+# The flyout may be showing a document loaded before the current build, in which case
+# it would be measured against stale JavaScript. Reload it onto the dashboard route and
+# wait for the page to come back before asserting anything about it.
+Invoke-Ctl "reload" | Out-Null
+$controls = ""
+for ($i = 0; $i -lt 45; $i++) {
+    Start-Sleep -Milliseconds 1000
+    $controls = Invoke-Eval $controlsScript
+    if ($controls -match "^[0-9]+\|[0-9]+$") { break }
+}
+Assert-That "flyout shows the tray pin and close" ($controls -eq "1|1") "$controls"
+
+# The injected bridge is what tells the page it is in a tray. If it is missing the
+# controls above vanish, so this is the same failure seen from the other side.
+$bridgeVersion = Invoke-Eval '(function(){return window.__rmBridge ? String(window.__rmBridge.version) : "(absent)";})()'
+Assert-That "page sees the bridge" ($bridgeVersion -eq "1") "version $bridgeVersion"
+
+# The tooltip belongs to the tray, so the page can only reach it through the bridge.
+$tooltip = Read-Field (Invoke-Ctl "status").lines "tooltip"
+Assert-That "tooltip reports the current route" ($tooltip -like "Router Monitor*") "$tooltip"
 
 # ---------------------------------------------------------------- 3. screenshots
 Say ""

@@ -575,6 +575,36 @@ Adding a command is **one row in `RegisterControlHandlers()`** in
 line, not the diagnostics. That is the point of the channel - it is where a new
 capability goes.
 
+#### Adding a capability: the demonstration
+
+The objective for this work asked for one command to be added as proof that the
+channel makes it cheap. `status` is that command.
+
+**Why the page cannot do it.** The one line in the notification-area tooltip belongs
+to the tray; a web page cannot write it. The page is also suspended whenever the
+flyout is hidden, so the tooltip is the only place a page-derived value can sit while
+nobody is looking at the panel.
+
+**What it cost.** One row in `RegisterControlHandlers()` and one method. Nothing in
+`Main`, the command line, the menu or the diagnostics learned about it — the generic
+client reaches it immediately:
+
+```powershell
+dist\tray\RouterMonitorTray.exe --ctl status --arg "text=Router Monitor — Requests"
+```
+
+The page reaches the same method through the bridge, so both transports share one
+implementation rather than two:
+
+```ts
+setStatus("Router Monitor — Requests");
+```
+
+The tray icon now reads `Router Monitor — Overview`, `— Requests`, and so on, so a
+glance at the notification area says which page the panel is on. `TrayControls`
+reports it on every route change; `WinForms` caps `NotifyIcon.Text` at 63 characters
+and throws above that, so the tray trims rather than trusting the page.
+
 Two consequences worth knowing:
 
 - **A second launch no longer dies without a word.** It asks the running tray to

@@ -65,6 +65,7 @@ namespace RouterMonitorTray
             "close:function(){post({v:1,type:'close'});}," +
             "openExternal:function(url){post({v:1,type:'openExternal',url:String(url)});}," +
             "setPinned:function(on){post({v:1,type:'pin',pinned:!!on});}," +
+            "setStatus:function(text){post({v:1,type:'status',text:String(text)});}," +
             "ready:function(){post({v:1,type:'ready'});}};" +
             "document.addEventListener('keydown',function(e){" +
             "if(e.key!=='Escape'){return;}" +
@@ -167,6 +168,13 @@ namespace RouterMonitorTray
         /// stopped working looks identical to one that is fine.
         /// </summary>
         public event Action<string> ProblemReported;
+
+        /// <summary>
+        /// Raised when the page reports a one-line status. The tray owns the
+        /// notification-area tooltip, so this is the only way the page can put
+        /// anything there.
+        /// </summary>
+        public event Action<string> StatusReported;
 
         public bool WebViewFailed
         {
@@ -1096,6 +1104,7 @@ namespace RouterMonitorTray
 
             string type = raw;
             string url = null;
+            string statusText = null;
             bool pinned = false;
             bool wellFormed = false;
 
@@ -1107,6 +1116,7 @@ namespace RouterMonitorTray
                         ControlProtocol.Serializer.Deserialize<Dictionary<string, object>>(raw);
                     type = Field(envelope, "type");
                     url = Field(envelope, "url");
+                    statusText = Field(envelope, "text");
                     pinned = Flag(envelope, "pinned");
                     wellFormed = Field(envelope, "v") == "1";
                 }
@@ -1154,6 +1164,12 @@ namespace RouterMonitorTray
                         PinnedChanged(pinned);
                     }
                     PublishState();
+                    break;
+                case "status":
+                    if (StatusReported != null)
+                    {
+                        StatusReported(statusText == null ? "" : statusText);
+                    }
                     break;
                 default:
                     LogInit("bridge: unknown type '" + type + "'");

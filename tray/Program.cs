@@ -56,6 +56,9 @@ namespace RouterMonitorTray
             menu = BuildMenu();
             // The page can pin itself; the menu and the settings file have to agree.
             panel.PinnedChanged += OnPinnedChanged;
+            // Same capability, two transports: the control channel's `status` command
+            // and the bridge's `status` message both land in ApplyStatus.
+            panel.StatusReported += ApplyStatus;
             panel.ProblemReported += delegate(string detail)
             {
                 Notify("Router Monitor 无法打开面板", detail, ToolTipIcon.Warning);
@@ -353,6 +356,60 @@ namespace RouterMonitorTray
         }
 
         /// <summary>
+        /// Reports, or sets, the one line the notification-area tooltip carries.
+        /// The tooltip belongs to the tray, so the page can only reach it through here.
+        /// </summary>
+        private ControlResponse HandleStatus(ControlRequest request)
+        {
+            string text = ArgString(request, "text", null);
+            if (text != null)
+            {
+                return Complete(OnUi(delegate
+                {
+                    ApplyStatus(text);
+                    return DescribeStatus();
+                }), 15000, request.id);
+            }
+            return Complete(OnUi(delegate { return DescribeStatus(); }), 15000, request.id);
+        }
+
+        private Dictionary<string, object> DescribeStatus()
+        {
+            List<string> lines = new List<string>();
+            Dictionary<string, object> fields = new Dictionary<string, object>();
+            AddLine(lines, fields, "tooltip", notifyIcon == null ? "(none)" : notifyIcon.Text);
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["lines"] = lines;
+            result["fields"] = fields;
+            return result;
+        }
+
+        /// <summary>
+        /// One line, in the notification area. WinForms caps NotifyIcon.Text at 63
+        /// characters and throws above it, so the text is trimmed rather than trusted.
+        /// </summary>
+        internal void ApplyStatus(string text)
+        {
+            if (notifyIcon == null)
+            {
+                return;
+            }
+            string line = string.IsNullOrEmpty(text) ? "Router Monitor" : text.Trim();
+            if (line.Length > 63)
+            {
+                line = line.Substring(0, 60) + "...";
+            }
+            try
+            {
+                notifyIcon.Text = line;
+            }
+            catch (Exception ex)
+            {
+                PanelForm.LogInit("status: " + ex.Message);
+            }
+        }
+
+        /// <summary>
         /// Measures this flyout: visible cost, suspend, hidden cost, warm reopen and
         /// an in-panel interaction. Only the tray that owns the WebView can take these
         /// numbers.
@@ -643,6 +700,7 @@ namespace RouterMonitorTray
             control.Register("shot", HandleShot);
             control.Register("eval", HandleEval);
             control.Register("cycle", HandleCycle);
+            control.Register("status", HandleStatus);
             control.Register("config", HandleConfig);
             control.Register("quit", HandleQuit);
         }
@@ -660,7 +718,7 @@ namespace RouterMonitorTray
             AddLine(lines, fields, "webview ready", panel.IsContentReady ? "yes" : "no");
             AddLine(lines, fields, "webview failed", panel.WebViewFailed ? "yes" : "no");
             AddLine(lines, fields, "suspend", panel.SuspendState);
-            AddLine(lines, fields, "server serving", ServerHost.IsServing(2000) ? "yes" : "no");
+            AddLine(lines, fields, "server serving", ServerHost.IsServing(8000) ? "yes" : "no");
             AddLine(lines, fields, "commands", string.Join(", ", names));
 
             Dictionary<string, object> result = new Dictionary<string, object>();

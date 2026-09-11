@@ -15,6 +15,7 @@ type PageToTray =
 	| { v: 1; type: "close" }
 	| { v: 1; type: "openExternal"; url: string }
 	| { v: 1; type: "pin"; pinned: boolean }
+	| { v: 1; type: "status"; text: string }
 	| { v: 1; type: "ready" };
 
 type TrayBridge = {
@@ -24,6 +25,7 @@ type TrayBridge = {
 	close: () => void;
 	openExternal: (url: string) => void;
 	setPinned: (pinned: boolean) => void;
+	setStatus: (text: string) => void;
 	ready: () => void;
 	listen: (fn: (message: TrayToPage) => void) => void;
 };
@@ -65,6 +67,15 @@ export function openExternal(url: string): void {
 /** Pins the flyout open (it otherwise hides as soon as it loses focus). */
 export function setPinned(pinned: boolean): void {
 	tray()?.setPinned(pinned);
+}
+
+/**
+ * Puts a line in the notification-area tooltip. Only the tray owns that, so this is
+ * the one way the page can put anything there; it also survives the panel being
+ * hidden, which is when a tooltip is actually read.
+ */
+export function setStatus(text: string): void {
+	tray()?.setStatus(text);
 }
 
 /** Subscribes to tray to page messages; returns an unsubscribe function. */
