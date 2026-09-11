@@ -210,198 +210,170 @@ failure); `GET /api/command-code?fresh=1` bypasses the cache and is what the
 
 ## System tray app
 
-`tray/` holds a native WinForms panel (`RouterMonitorTray.exe`) that reads the
-same JSON API, so the dashboard can live in the notification area instead of a
-browser tab. It is compiled with the .NET Framework compiler that ships with
-Windows, so no .NET SDK or extra npm package is needed.
+`tray/` holds a native WinForms host (`RouterMonitorTray.exe`) that lives in the
+notification area and opens the dashboard in a **WebView2** flyout pointed at
+`http://127.0.0.1:3000`.
 
-### Visual parity with the web app
+**The flyout is the web app.** It does not imitate the dashboard, it renders it:
+there is no drawing code in `tray/` at all. The panel is a borderless window whose
+only child is a WebView2 control showing the same URL a browser would show, so the
+two surfaces cannot drift apart. Everything that used to be reproduced by hand —
+the design tokens, the card geometry, the table layout, the Geist faces and their
+kerning, the lucide icon paths, the Cmd-K dialog — is now simply the page.
 
-The flyout is not a lookalike: it is drawn from the same design tokens. Every
-colour in `tray/Theme.cs` is the sRGB rendering of a variable in
-`src/app/globals.css` (both the dark and the light theme), and the tray uses
-the same CSS pixel type scale and the same recharts geometry, so the two
-surfaces match. **Light is the default**, just as in the app:
-`theme-provider` stores "light" unless the user picks dark, and the theme
-button in the header flips it.
+### What that replaced
 
-| Web | Tray |
-| --- | --- |
-| `:root` / `.dark` tokens | panel, card and sidebar fills, text, borders |
-| `--border` (white/10) | 1px card grid, exactly like `grid gap-px bg-border` |
-| `--chart-1/2/3/4/5` | tokens line, request bars, successful line, sparklines, donut |
-| `emerald-500/10` / `red-500/10` delta badges | up/down badges on stats and card headings |
-| `Badge` (h-5, rounded-4xl, text-xs) | status, `n OK`, error chips, `Messages` |
-| `DashboardCard` flush grid (`gap-px bg-border`) | Overview / DeepSeek hairline tiles |
-| `Card` (`rounded-xl bg-card ring-foreground/10`) | Requests / Models cards, drawn as real tiles |
-| `CardHeader` / `CardContent` / `CardFooter` | 16px padding, `gap-4`, `border-b`, `bg-muted/50` footer |
-| a wrapping `CardDescription` | `Cards.Header` word-wraps it, so a two-line description makes the header 101 not 81 and moves everything below it down 20px |
-| a bare `text-base` `CardTitle` | 2px taller than the default `leading-snug` one, which moves its description to +44 and its content to +81 — pass `Mx.TitleLineBase` to `Cards.Header` |
-| a trend card header (`space-y-2`) | its description sits at +46, not +42 |
-| a `CardFooter` holding a button | 61px (`Cards.FooterWithButton`) rather than the 49px a plain text line needs |
-| footer text vertical centring | the label centres on the footer's own 49/61px strip, never on whatever is left to the card's bottom edge |
-| a footer on a stretched card | follows the content, not the card's bottom edge — `Command Code limits` leaves 361px blank under its footer, `DeepSeek API account` 119px |
-| `Avatar` (`after:border-border`) | the header avatar always carries its 1px ring |
-| `SidebarGroupLabel` (h-8 px-2 font-medium) | the Router / Data captions |
-| sidebar + `h-14` header | the real 16rem rail and 56px bar, breadcrumb, search chip |
-| lucide-react icons | `tray/Glyph.cs` carries the same path data, stroked at `stroke-width: 2` |
-| Geist (next/font) | `scripts/generate-tray-fonts.py` emits static 400/500/600/700 faces, embedded in the exe and registered by `tray/Fonts.cs` |
-| `font-normal`/`font-medium`/`font-semibold` | `Theme.TextW(..., weight, ...)` picks the matching face |
-| baseline alignment | the browser centres each run's glyph box in its line box; `Theme.InkShift(px)` corrects GDI+'s ascent anchoring — 0 at 12/14px, +2 at 16px, +3 at 20px, −4 at 24px |
-| OpenType kerning | Geist keeps its kerning in GPOS, which GDI+ ignores, so every Latin run measured ~2% wide and paragraphs wrapped in the wrong place. `scripts/generate-tray-kerning.py` extracts the pair adjustments into `tray/Kerning.cs`, and `Theme` applies them to each run's advance |
-| `text-wrap` | a run is drawn in one `DrawString` call; kerning goes into the cursor advance, not into per-glyph drawing (GDI+ grid-fits each origin separately, which measures worse) |
-| the `--font-sans` token | `globals.css` maps it to `--font-geist-sans`. It previously read `--font-sans: var(--font-sans)`, a self-reference that resolved to nothing and dropped the whole app to Times New Roman |
-| `leading-snug` vs bare `text-base` | a snug title has 1px less half-leading, so it draws 1px higher than the `InkShift` figure alone would put it |
-| measured geometry | card heights, column widths, cell padding, the header control cluster and the grid's `p-px` offsets all taken from the live DOM |
-| table auto layout (the web `table` is `width:100%` with no `table-fixed`) | `Cards.AutoLayout` sizes each column to its widest cell (ps-6 / px-2 / pe-6) and shares the slack in proportion, so a wider card or different model names both come out right |
-| header cluster (`items-center gap-2`) | source switch, range group, "updated" label and Refresh on one 28px row at y=99 |
+The previous tray was a GDI+ re-implementation of the whole front end: 19 C#
+files and 9,824 lines, including a 79 KB base64 kerning table, four embedded Geist
+faces, hand-copied lucide icon paths and a table auto-layout algorithm, all held in
+place by a pixel-diff tool that scored the panel against browser screenshots.
 
-The window is a **1688x935 CSS-pixel surface — the viewport the reference
-screenshots were taken at** (2523x1402 physical at 1.5x DPR). At that width the
-web's `max-w-(--app-wrapper-max-width)` cap (80rem = 1280) is already active, so
-the grid is 1232px wide at x=356 in both.
+|  | Hand-drawn (before) | WebView2 (now) |
+| --- | --- | --- |
+| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** |
+| Compiler | `csc.exe` (.NET Framework) | `csc.exe` — unchanged |
+| Executable | 530 KB | 55 KB (+ WebView2 DLLs) |
+| Fidelity | hand-matched, pixel by pixel | identical by construction |
+| When the web UI changes | re-measure and re-sync by hand | nothing to do |
 
-**The live app is the specification, and `reference/*.png` is the fallback.**
-`scripts/capture-web-reference.js` screenshots all five pages at 1688x935 and the
-tray is diffed against them; where a page has no captured reference the four
-screenshots in `reference/` are used instead. Card heights, column widths, cell
-padding, the header control cluster and the grid's `p-px` offsets in
-`tray/Cards.cs`, `tray/Widgets.cs` and the page files all come from measured DOM
-geometry, not from eyeballing. The sidebar collapses to an icon rail from the
-header's panel button, like the web `collapsible="icon"` sidebar. The flyout
-carries **every page** the app has:
+Across the whole change: **11,201 lines deleted, 547 added.**
 
-- **Overview** — MetricStatGrid, `Requests per day`, `Tokens and success`,
-  `Recent requests`, `Command Code limits` (three paced windows with
-  tone-coloured bars), `Model distribution` (donut + legend), `Router health`,
-  `Top models`, `Activity` and `Usage insights` including the hourly histogram
-  and the daily-activity heat strip.
-- **Requests** — the stale-log banner (an amber note when the newest entry is an
-  hour old or more, which shifts both cards down), `Filter requests` with the
-  API/model selects, the 400-row log with sortable headers, pagination and
-  **Export CSV**.
-- **Models** — `Switch model` plus the full `Model usage` table.
-- **DeepSeek** — the request-scope banner, account health, `Balance and spend`
-  in CNY, `Requests and tokens per day` and `Models`.
-- **Command Code** — the account's all-time usage tiles, its three paced credit
-  windows with tone-coloured progress bars, remaining credits, the account
-  identity, the billing subscription and the health of the four
-  commandcode.ai endpoints.
+### Viewport
 
-The header keeps the **DeepSeek API / Codex Router API** switcher and the
-**All / 30d / 7d / 24h** range switcher, the sun/moon button flips the whole
-panel between the dark and the light theme, and the search chip opens the
-Cmd-K command menu. Mouse wheel scrolls; hovering the bar chart shows the same
-tooltip the web chart does.
+The page is laid out at exactly **1688x935 CSS pixels** — the size the reference
+screenshots were taken at — so the flyout never falls into the app's responsive
+layout. WebView2 already scales content by the display scale, so the flyout keeps
+`ZoomFactor` at **1.0** (exactly the browser's rendering) and sizes the window to
+`1688 x 935 x display scale`. On this machine (2560x1600 at 150%) that is a
+2532x1402 window whose page reports `innerWidth x innerHeight = 1688x935` and
+`devicePixelRatio = 1.5` — the same numbers a maximised browser gives.
 
-The Cmd-K dialog is interactive, not a picture of one: its search field is a
-real `TextBox` hosted over the painted panel, so typing filters the list, the
-caret and selection work, and IME composition behaves normally. `Up`/`Down`
-move the highlight, `Enter` runs the selected command, and `Esc` closes the
-dialog before it closes the flyout.
+Option (a) of the two allowed was chosen: the panel's physical size is the CSS size
+times the display scale, and it only shrinks — never re-lays-out — if it would not
+fit the work area, by lowering the window size and `ZoomFactor` together so the
+CSS viewport stays 1688x935.
+
+### Performance
+
+The host process is idle-cheap and stays warm: the WebView2 is created on the first
+open and then **suspended, never destroyed**, and the Node server is started on
+demand and left running. Nothing is torn down when the flyout closes, so opening it
+again never pays a cold start.
+
+Measured by `scripts/verify-tray.ps1` (see `logs/verify/report.txt`):
+
+| Scenario | Measured | Budget |
+| --- | --- | --- |
+| Click tray icon → panel visible | same frame (it is a `Show()`) | 200 ms |
+| Reopen after suspend (warm resume) | **37–39 ms** | 200 ms |
+| In-panel navigation (click a sidebar link → route changed) | **45–47 ms** | no perceptible stall |
+| First open of the day | 1–3 s, with a loading label | 5 s |
+| Hidden CPU | **0 ms per 0.5 s sample** (median) | ≈ 0 |
+| Visible CPU | 0–450 ms per 0.5 s sample | — |
+| Tray process | 53–63 MB | — |
+| WebView2 while hidden | 20–25 MB resident / 219 MB committed | 450 MB |
+| WebView2 while visible | 437 MB resident / 380–495 MB committed | 450 MB |
+
+The reopen and interaction numbers are the ones that matter. Navigation inside the
+panel is handled by the React app itself — the tray adds nothing to the path, which
+is exactly why clicking a filter or a sidebar link costs the same as it does in a
+browser tab.
+
+While the panel is hidden the working set collapses to ~20 MB because Windows trims
+a suspended process; the ~219 MB that stays committed is what makes the resume 37 ms
+instead of a cold start. Chromium accepts the suspend (`suspend hidden: suspended`)
+and holds it at **zero CPU**.
+
+For the first open of the day the CLI reports 1–3 s: creating the WebView2
+environment and starting the Node host are both one-time costs. `/deepseek` is the
+slowest page to paint at any time (~2.6 s) because that route renders its whole
+report server-side.
+
+The tray does **not** kill the WebView2 or the Node server when the panel closes.
+Doing so would turn every reopen into that 1–3 s cold start and is the failure mode
+this design exists to avoid.
+
+### Building
 
 ```powershell
+# one-time: pull the pinned WebView2 SDK into tray\lib
+powershell -ExecutionPolicy Bypass -File scripts\fetch-webview2.ps1
+
 powershell -ExecutionPolicy Bypass -File scripts\build-tray.ps1            # compile only
 powershell -ExecutionPolicy Bypass -File scripts\install-tray.ps1 -Start   # build, install, launch
 ```
 
-`install-tray.ps1` writes the desktop shortcut, drops an autostart shortcut in
-the user's Startup folder (an ONLOGON scheduled task would require elevation)
-and starts the app. It also removes the web host's logon task if one exists.
+The build still uses the .NET Framework compiler that ships with Windows, so no
+.NET SDK is needed; the only third-party references are the two WebView2 managed
+assemblies and their native loader, pinned to **1.0.4191.47** — the SDK matching
+the WebView2 Runtime that Edge ships here (152.0.4191.66). `fetch-webview2.ps1`
+downloads that exact package from NuGet rather than borrowing a copy from another
+product's install directory, whose version would not be under our control.
+
+### Verification
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1
+```
+
+One command produces `logs/verify/report.txt` with the rendered viewport and DPR,
+a screenshot of all five pages taken from the real flyout, the cold and warm open
+latencies, whether Chromium accepted the suspend, and process/CPU samples while the
+panel is visible and while it is hidden. It counts only the Chromium processes
+descended from the tray itself, so other applications' WebView2 instances are not
+blamed on this one.
+
+`install-tray.ps1` writes the desktop shortcut, drops an autostart shortcut in the
+user's Startup folder (an ONLOGON scheduled task would require elevation) and
+starts the app. It also removes the web host's logon task if one exists.
 
 Tray behaviour:
 
-- Left-click the icon, or pick **打开面板**, to open the flyout; it hides again when it loses focus, `Esc` closes it, and **固定面板** pins it open.
+- Left-click the icon, or pick **打开面板**, to open the flyout; it hides again when
+  it loses focus, `Esc` closes it, and **固定面板** pins it open.
 - Double-click, or pick **打开网页版**, to open the full dashboard in the browser.
-- **数据源** switches between the active CC Switch profile, the DeepSeek API, the Codex Router API and DeepSeek Harness.
+- **立即刷新** reloads the page in place.
 - **开机自动启动** toggles the Startup-folder shortcut.
-- When `http://127.0.0.1:3000` is not answering, the tray starts the hidden host itself by running `scripts\start-dashboard.ps1`.
+- When `http://127.0.0.1:3000` is not answering, the tray starts the hidden host
+  itself by running `scripts\start-dashboard.ps1`.
 
-### Auto-start
+The data-source switcher (DeepSeek API / Codex Router API / DeepSeek Harness) is no
+longer in the tray menu: the real page carries it in its header, and duplicating it
+would mean two places to keep in sync.
 
-**Only the tray auto-starts.** The web host deliberately has no logon task:
-booting it at logon costs a Next.js server's worth of memory and CPU whether or
-not anyone looks at the dashboard. The tray starts it on demand, and
-`scripts\open-dashboard.ps1` does the same for the browser path.
+`start-dashboard.ps1` ends in `$server.WaitForExit()`, so it never returns. The
+host launches it detached and never waits on it — a `WaitForExit()` there would
+block the UI thread forever with no error. The script is safe to call repeatedly:
+it exits immediately when the port is already listening, and the host additionally
+fires it at most once per process so a long `npm run build` cannot be started twice.
 
-The flyout is **anchored to the tray icon and cannot be dragged**. The window
-carries no `WS_CAPTION`, `WS_THICKFRAME` or `WS_SYSMENU`, every `WM_NCHITTEST`
-reports `HTCLIENT` so there is no title bar or resize edge to grab, the
-`SC_MOVE` / `SC_SIZE` system commands are swallowed, and any relocation that
-still reaches the window is pulled back to the anchor. `RouterMonitorTray.exe
---check-window` proves all four properties and reports `RESULT: anchored`.
+### Escaping the flyout
 
-Diagnostics render the panel to a PNG without showing a window:
+The page itself has no idea it is in a tray, so a small bridge script is injected on
+document creation. It listens for `Escape` on the capture phase and posts
+`rm:close` to the host **only when no dialog, listbox or menu is open** — so
+`Escape` unwinds an open Cmd-K dialog first and only a bare panel hides the flyout,
+which is the behaviour the hand-drawn panel had.
 
-```powershell
-# one page at 125% display scaling, scrolled into the middle of the content
-dist\tray\RouterMonitorTray.exe --render preview\requests.png --scale 1.25 --page requests --scroll 900
+### Diagnostics
 
-# the light theme, a filter applied, and an open dropdown
-dist\tray\RouterMonitorTray.exe --render preview\light.png   --page overview --theme light
-dist\tray\RouterMonitorTray.exe --render preview\filter.png  --page requests --provider commandcode
-dist\tray\RouterMonitorTray.exe --render preview\select.png  --page models   --popup model
-
-# the Cmd-K dialog with a query typed into its real input
-dist\tray\RouterMonitorTray.exe --render preview\command.png --page overview --popup command --query "mo" --form host
-
-# a contact sheet with Overview, Requests, Models and DeepSeek side by side
-powershell -ExecutionPolicy Bypass -File scripts\preview-tray.ps1 -Scale 1.0
-```
-
-Exit code `0` means live data was rendered; `1` means the host was unreachable
-and the panel drew its offline state. `--page overview|requests|models|deepseek`
-picks the view, `--range all|30|7|1` the window, `--source deepseek|router` the
-data source, `--theme light` the theme, `--provider`/`--model` the log filters,
-`--popup provider|model|user|command` an open overlay, `--query` the Cmd-K
-filter, `--hover` a forced hover key and `--url` another host.
-
-`--form host` realises the flyout in a real (offscreen) window before capturing,
-which is the only way to include hosted child controls. The headless renderer
-draws the search text itself, so both modes show the same picture.
-`--dump-layout` prints the measured card rectangles in screen coordinates so
-they can be diffed against a DOM probe directly.
+Evidence modes drive the real flyout and write a report file, because a `winexe`
+has no console of its own:
 
 ```powershell
-# capture the browser pages (light theme, 1688x935) the tray is compared against
-node scripts\capture-web-reference.js
-
-# render every page at 1:1 and stack it under the Playwright screenshot
-powershell -ExecutionPolicy Bypass -File scripts\compare-tray-web.ps1
-
-# diff against the frozen reference screenshots (reference\*.png)
-powershell -ExecutionPolicy Bypass -File scripts\compare-tray-to-reference.ps1
+dist\tray\RouterMonitorTray.exe --probe --report logs\verify\probe.txt
+dist\tray\RouterMonitorTray.exe --shot  preview\tray\overview.png --page /
+dist\tray\RouterMonitorTray.exe --cycle preview\tray\cycle.png --report logs\verify\cycle.txt --hold 30000
 ```
 
-`reference/` holds the browser screenshots the panel is built from. They are the
-spec: the app keeps changing during development, so these are what the tray is
-measured against. They were captured at 1.5x DPR, so the comparison scales each
-to CSS pixels and skips the flyout's own 46px control strip.
+`--probe` prints the viewport, DPR, page title, WebView2 core version and whether
+the Escape bridge was installed. `--shot` opens the flyout on `--page` and saves it
+as it appears on screen. `--cycle` opens the panel, times an in-panel navigation,
+hides it for `--hold` milliseconds while sampling CPU and memory, reopens it and
+prints the warm resume latency. `--report` writes the same lines to a file.
 
-`compare-tray-to-reference.ps1` renders its own 1:1 images into
-`dist/tray/measure/` rather than reusing `dist/tray/preview/`: `preview-tray.ps1`
-renders the same page names at a smaller `--scale` into that directory, so
-sharing one location silently scores a scaled bitmap against a 1:1 one — and
-`GetPixel` past its width throws rather than reporting a difference.
-
-The scoring itself is `tools/ImageDiff.cs`, built by
-`scripts/build-imagediff.ps1` into `dist/tray/ImageDiff.exe`. It exists because
-two things about the captures have to be handled before a number means anything:
-
-- **Width.** The four were taken at different browser widths (1671 to 1691 CSS
-  px), so a page can be globally offset against the tray by up to ~8px through no
-  fault of the layout. The tool searches a ±12/±6px translation window first and
-  scores at the best alignment, so the result measures layout rather than capture
-  width. Across all four captures the invariant is that the card grid starts
-  102–103 CSS px right of the sidebar divider; the tray draws it at 101.
-- **A stray window.** The `requests` capture still has Windows' Snipping Tool
-  toast over its bottom-right corner. That rectangle is excluded from the score
-  and painted purple in the heat map, so a screenshot artifact is not read as a
-  UI mismatch.
-
-It works on locked 32bpp buffers rather than `Bitmap.GetPixel`: a ~1.6M-pixel
-scan across 25 alignments takes 15s that way against roughly ten minutes through
-`GetPixel`.
+`reference/` holds the four browser screenshots the hand-drawn panel was originally
+measured against. They are kept as a record of that work; nothing reads them now.
 
 ## Learn More
 

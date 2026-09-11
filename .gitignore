@@ -46,3 +46,6 @@ next-env.d.ts
 
 # local debug log
 /dev.log
+
+# local verification scratch
+/logs/verify/
