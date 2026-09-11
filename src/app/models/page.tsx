@@ -67,13 +67,13 @@ export default async function ModelsPage({ searchParams }: ModelsPageProps) {
 		<AppShell>
 			<div className="flex flex-col gap-4">
 				<header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-					<div className="flex flex-col gap-1">
+					{/* min-w-0 lets the prose give up width before the controls give up a row. */}
+					<div className="flex min-w-0 flex-col gap-1">
 						<h1 className="font-heading text-xl font-semibold tracking-tight">
 							Models
 						</h1>
 						<p className="text-sm text-muted-foreground">
-							Usage per API and model. The same model can run on several APIs
-							(e.g. deepseek vs opencode-go).
+							Usage per API and model. One model can run on several APIs.
 						</p>
 					</div>
 					<div className="flex flex-wrap items-center gap-2">

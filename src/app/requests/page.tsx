@@ -60,12 +60,12 @@ export default async function RequestsPage({ searchParams }: RequestsPageProps) 
 	const sourceLabel = snapshot.sourceLabel;
 	const sourceDescription =
 		source === "all"
-			? "Every request any reader can see, counted once. Not the sum of the three tabs — they overlap."
+			? "Every request from every reader, counted once."
 			: source === "router"
-				? "Live request log from Codex Router API (127.0.0.1:4202)."
+				? "Live log from Codex Router API (127.0.0.1:4202)."
 				: source === "harness"
-					? "Live request log from DeepSeek Harness session logs (~/.dsh/sessions)."
-					: "Live request log from the native DeepSeek API (api.deepseek.com).";
+					? "Live log from the DeepSeek Harness session logs."
+					: "Live log from the native DeepSeek API.";
 	// The harness meters the native DeepSeek upstream in CNY; Command Code turns
 	// there are billed as credits, so only the priced part is shown.
 	// "all" reports no cost on purpose: DeepSeek's CNY list prices only DeepSeek
@@ -96,7 +96,8 @@ export default async function RequestsPage({ searchParams }: RequestsPageProps) 
 		<AppShell>
 			<div className="flex flex-col gap-4">
 				<header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-					<div className="flex flex-col gap-1">
+					{/* min-w-0 lets the prose give up width before the controls give up a row. */}
+					<div className="flex min-w-0 flex-col gap-1">
 						<h1 className="font-heading text-xl font-semibold tracking-tight">
 							Requests
 						</h1>

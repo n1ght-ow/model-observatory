@@ -110,6 +110,45 @@ async function main() {
 		"cost must stay absent: it is not comparable across upstreams"
 	);
 
+	// ------------------------------------------------------------ header stays one line
+	// The switchers must not wrap below the title: a wrapped Refresh button reads as a
+	// layout bug. Rows are counted with a tolerance, because controls of different
+	// heights are still centred on the same row and a few pixels of top offset is not a
+	// wrap - a real wrap moves a child down by about a row height.
+	for (const route of ["/", "/requests", "/models"]) {
+		await page.setViewportSize({ width: 1688, height: 935 });
+		await page.goto(`${BASE}${route}?source=all`, { waitUntil: "networkidle" });
+		await page.waitForSelector("main", { timeout: 15000 });
+		const header = await page.evaluate(() => {
+			const h1 = Array.from(document.querySelectorAll("h1")).find((e) => e.closest("main"));
+			const el = h1.closest("header");
+			const row = el.children[1];
+			const tops = Array.from(row.children)
+				.map((k) => Math.round(k.getBoundingClientRect().top))
+				.sort((a, b) => a - b);
+			let rows = 1;
+			for (let i = 1; i < tops.length; i += 1) {
+				if (tops[i] - tops[i - 1] > 20) rows += 1;
+			}
+			return {
+				rows,
+				overflow: Math.round(
+					row.getBoundingClientRect().right - el.getBoundingClientRect().right
+				),
+			};
+		});
+		check(
+			`${route} header controls stay on one line`,
+			header.rows === 1,
+			`${header.rows} row(s)`
+		);
+		check(
+			`${route} header controls do not overflow`,
+			header.overflow <= 1,
+			`${header.overflow} px past the edge`
+		);
+	}
+
 	// ------------------------------------------------------- tray-only controls
 	// The bridge is injected by the tray, so in a browser these must not exist.
 	await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
