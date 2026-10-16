@@ -27,7 +27,7 @@ try {
 	const value = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
 	if (value && typeof value === "object" && !Array.isArray(value)) settings = value;
 } catch { /* First launch or interrupted settings write. */ }
-let window, tray, child, origin = "", starting, collectionTimer, quitting = false, stopping, collectionRequest, startupRequest, pendingGeometry, failure, saveTimer;
+let window, tray, child, origin = "", starting, collectionTimer, quitting = false, shutdownComplete = false, restarting = false, stopping, collectionRequest, startupRequest, pendingGeometry, failure, saveTimer;
 const startedAt = Date.now();
 let logPath, logBytes = 0, savedSettings = "";
 function log(message) {
@@ -65,6 +65,7 @@ function showWindow() {
 	window.show();
 	// Windows can apply a hidden launcher's startup show state on the first
 	// ShowWindow call. Restore after it so a manual launch is actually usable.
+	if (!window.isVisible()) window.show();
 	if (window.isMinimized()) window.restore();
 	if (pendingGeometry) {
 		const desired = pendingGeometry; pendingGeometry = undefined;
@@ -84,22 +85,43 @@ function localPage(url) {
 	try { const parsed = new URL(url); return parsed.origin === origin && ["/", "/models", "/requests", "/tools"].includes(parsed.pathname); }
 	catch { return false; }
 }
+function restart() {
+	if (quitting || restarting) return;
+	restarting = true;
+	app.quit();
+}
+function loginEnabled() {
+	// Electron 44 parses this lookup as a command line, so quote spaced paths.
+	const state = app.getLoginItemSettings({ path: `"${process.execPath}"`, args: ["--autostart"] });
+	return state.openAtLogin && state.executableWillLaunchAtLogin;
+}
 function buildMenu() {
 	const portable = Boolean(process.env.PORTABLE_EXECUTABLE_FILE);
 	const common = [
 		{ label: "打开模型账本", click: showWindow },
 		{ label: "窗口置顶", type: "checkbox", checked: Boolean(window?.isAlwaysOnTop()), click: (item) => { window.setAlwaysOnTop(item.checked); saveWindow(); buildMenu(); } },
-		{ label: portable ? "开机启动（安装版可用）" : "开机启动", type: "checkbox", enabled: app.isPackaged && !portable, checked: app.isPackaged && !portable && app.getLoginItemSettings({ path: process.execPath, args: ["--autostart"] }).openAtLogin, click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked, path: process.execPath, args: ["--autostart"] }) },
+		{ id: "autostart", label: portable ? "开机启动（安装版可用）" : "开机启动", type: "checkbox", enabled: app.isPackaged && !portable, checked: app.isPackaged && !portable && loginEnabled(), click: (item) => {
+			try { app.setLoginItemSettings({ openAtLogin: item.checked, enabled: item.checked, path: process.execPath, args: ["--autostart"] }); }
+			catch (error) { log(`Autostart: ${error.message}`); dialog.showErrorBox("开机启动设置失败", "请重试，或在 Windows 设置中检查启动应用。"); }
+			buildMenu();
+		} },
 		{ type: "separator" },
 		{ label: "查看诊断日志", click: () => { log("Open diagnostics"); void shell.openPath(path.dirname(logPath)); } },
-		{ label: "退出", click: () => app.quit() },
+		{ label: "重新启动", accelerator: "CommandOrControl+Shift+R", click: restart },
+		{ label: "退出", accelerator: "CommandOrControl+Q", click: () => app.quit() },
 	];
-	Menu.setApplicationMenu(Menu.buildFromTemplate([
+	const appMenu = Menu.buildFromTemplate([
 		{ label: "应用", submenu: common },
 		{ label: "编辑", submenu: [{ role: "undo", label: "撤销" }, { role: "redo", label: "重做" }, { type: "separator" }, { role: "cut", label: "剪切" }, { role: "copy", label: "复制" }, { role: "paste", label: "粘贴" }, { role: "selectAll", label: "全选" }] },
 		{ label: "视图", submenu: [{ role: "reload", label: "重新加载" }, { type: "separator" }, { role: "resetZoom", label: "实际大小" }, { role: "zoomIn", label: "放大" }, { role: "zoomOut", label: "缩小" }, { type: "separator" }, { role: "togglefullscreen", label: "全屏" }] },
-	]));
-	tray.setContextMenu(Menu.buildFromTemplate(common));
+	]);
+	const trayMenu = Menu.buildFromTemplate(common);
+	for (const menu of [appMenu.items[0].submenu, trayMenu]) menu.on("menu-will-show", () => {
+		const item = menu.getMenuItemById("autostart");
+		if (item.enabled) item.checked = loginEnabled();
+	});
+	Menu.setApplicationMenu(appMenu);
+	tray.setContextMenu(trayMenu);
 }
 function freePort(preferred) {
 	return new Promise((resolve, reject) => {
@@ -193,23 +215,36 @@ async function stopService() {
 		let timer;
 		service.once("exit", () => { clearTimeout(timer); resolve(); });
 		try { service.postMessage("shutdown"); } catch (error) { log(`Shutdown: ${error.message}`); }
-		timer = setTimeout(() => { try { service.kill(); } catch {} resolve(); }, 2200);
+		timer = setTimeout(() => { log("Service shutdown timed out; retained logs will be replayed on launch"); try { service.kill(); } catch {} }, 12000);
 	}).finally(() => { stopping = undefined; });
 	return stopping;
 }
 
-const locked = app.requestSingleInstanceLock();
+const launchAction = process.argv.includes("--quit") ? "quit" : process.argv.includes("--restart") ? "restart" : process.argv.includes("--autostart") ? "autostart" : "show";
+const locked = app.requestSingleInstanceLock({ action: launchAction });
 if (!locked || process.argv.includes("--quit")) app.quit();
 else {
-	app.on("second-instance", (_event, argv) => { if (argv.includes("--quit")) app.quit(); else showWindow(); });
+	app.on("second-instance", (_event, _argv, _cwd, data) => {
+		// Chromium may append flags to argv; preserve the sender's actual intent.
+		if (data?.action === "quit") app.quit();
+		else if (data?.action === "restart") restart();
+		else if (data?.action !== "autostart") showWindow();
+	});
 	app.on("activate", showWindow);
 	app.on("window-all-closed", () => {});
 	app.on("before-quit", (event) => {
-		if (quitting) return;
+		if (quitting) { if (!shutdownComplete) event.preventDefault(); return; }
 		event.preventDefault(); quitting = true;
 		startupRequest?.abort();
 		saveWindow(); globalShortcut.unregisterAll();
-		void stopService().finally(() => app.quit());
+		void stopService().finally(() => {
+			if (restarting) {
+				const args = process.argv.slice(1).filter((arg) => !["--autostart", "--quit", "--restart"].includes(arg));
+				app.relaunch({ args, ...(process.env.PORTABLE_EXECUTABLE_FILE ? { execPath: process.env.PORTABLE_EXECUTABLE_FILE } : {}) });
+			}
+			shutdownComplete = true;
+			app.quit();
+		});
 	});
 	app.whenReady().then(async () => {
 		log(`Launch ${app.getVersion()}; packaged=${app.isPackaged}`);

@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyRendererRecovery } from "./desktop-recovery.mjs";
+import { verifyDesktopLifecycle } from "./desktop-lifecycle.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const shipped = process.env.DESKTOP_EXECUTABLE || path.join(root, "dist", "desktop", "win-unpacked", "ModelObservatory.exe");
@@ -204,6 +205,8 @@ try {
 	record("损坏的窗口设置不影响历史读取；--quit 正常退出并清理采集服务");
 	await verifyRendererRecovery({ executable, env, home, waitUntil });
 	record("真实渲染进程崩溃重试清理原服务，恢复后只有一个采集进程");
+	await verifyDesktopLifecycle({ executable, env, home, waitUntil });
+	record("静默自启、系统禁用后重新开启、退出排空写入、离线补采、半行恢复及菜单和命令行重启去重");
 	assert.deepEqual(errors, []);
 	await writeFile(path.join(evidence, "report.json"), JSON.stringify({ passed, errors, startupMs, packagedExecutable: shipped, relocatedPath: relocated, testedAt: new Date().toISOString() }, null, 2));
 	console.log(`RESULT: pass ${passed.length} desktop checks`);

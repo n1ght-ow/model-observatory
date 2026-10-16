@@ -16,7 +16,7 @@ npm run desktop:build
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-desktop.ps1 -NoBuild -Start
 ```
 
-发行文件位于 `dist/desktop/`：`Model-Observatory-0.2.4-Setup.exe` 为安装包，`Model-Observatory-0.2.4-Portable.exe` 为免安装版。支持 Windows 10 / 11 x64。其他电脑只需要安装包或免安装 EXE，不需要源码、系统 Node.js、npm、Edge / WebView2 安装步骤或单独启动网页服务器。安装版创建桌面及开始菜单快捷方式。
+发行文件位于 `dist/desktop/`：`Model-Observatory-0.2.5-Setup.exe` 为安装包，`Model-Observatory-0.2.5-Portable.exe` 为免安装版。支持 Windows 10 / 11 x64。其他电脑只需要安装包或免安装 EXE，不需要源码、系统 Node.js、npm、Edge / WebView2 安装步骤或单独启动网页服务器。安装版创建桌面及开始菜单快捷方式。
 
 桌面采用 **Electron**，直接保留原有 React 界面与交互。应用自带 Chromium、Node 和轻量本机数据服务；窗口只加载本机打包资源，字体、脚本及样式不访问外部网络。不会打开或控制外部 Chrome / Edge，也不会在运行时执行 npm install、构建或搜索源码目录。首次打开会先显示本地启动页，本机服务失败时提供重试及诊断日志入口。
 
@@ -24,7 +24,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-desktop.ps1 
 
 应用图标采用石墨黑底、银白柱形与观测轨道，窗口、托盘、EXE、安装包和界面 favicon 共用同一套图稿。原图及生成提示词位于 `desktop/artwork/`，运行 `python scripts/generate-app-icon.py` 可重新导出 16 至 256 像素的 9 种 ICO 尺寸。
 
-手动启动显示标准桌面窗口，支持任务栏 / Alt+Tab、边缘缩放、最大化、最小化及位置尺寸保存。关闭窗口收起到托盘并继续采集，菜单“退出”结束应用及自有数据服务。`Alt+A` 唤出窗口，`Ctrl+R` 重新加载，`Ctrl++` / `Ctrl+-` 调整显示比例；按 `Alt` 显示菜单，可设置置顶及开机启动。免安装单文件版本不提供开机启动，因为它每次会展开到临时目录。
+手动启动显示标准桌面窗口，支持任务栏 / Alt+Tab、边缘缩放、最大化、最小化及位置尺寸保存。关闭窗口收起到托盘并继续采集；应用菜单和托盘菜单均提供“退出”（`Ctrl+Q`）及“重新启动”（`Ctrl+Shift+R`）。退出会等待已接收的事件写入和正在执行的补采，再关闭自有数据服务；超过 12 秒仍未完成时结束服务，下次启动从保留的源日志重扫，SQLite 已提交历史不受影响。重新启动先清理旧服务，再打开新窗口；退出后也可随时双击 EXE 重新打开。命令行支持 `ModelObservatory.exe --quit` 和 `ModelObservatory.exe --restart`。
+
+`Alt+A` 唤出窗口，`Ctrl+R` 重新加载，`Ctrl++` / `Ctrl+-` 调整显示比例；按 `Alt` 显示菜单，可设置置顶及开机启动。开机启动进入托盘，不弹出窗口；重复收到自启命令也不会打断当前窗口状态。自启菜单读取 Windows 的实际启用状态，在系统设置中禁用后可从菜单重新开启。手动退出不取消开机启动。免安装单文件版本不提供开机启动，因为它每次会展开到临时目录。
 
 原模型总览、活动图、请求流水、来源覆盖、命名规则、深浅主题和 CSV 导出均共用原前端。Cursor 继续标明会话请求轮次，未知 Token 不补零。下载会调用系统文件保存对话框。
 
@@ -32,7 +34,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-desktop.ps1 
 
 Windows 安装包尚未使用商业代码签名证书，系统可能提示未知发布者。安装包包含运行依赖，不包含本机历史、配置密钥或环境文件。安装到另一台电脑后，会读取那台电脑自身保留的工具记录；不会自动复制当前电脑的历史。
 
-再次启动会自动扫描仍然存在的原始日志，补读退出期间的请求，并按稳定 ID 去重。**已采集的原始观测保存在 `~/.model-observatory/history.sqlite`**，源文件清理或暂时无法读取不会删除已入账历史；更新同一请求的用量会修订原记录。SQLite 事务和 WAL 保护写入，命名规则与跨来源匹配仍在查询时统一应用。暂停状态重启后保留，需要主动恢复。
+再次启动会立即扫描仍然存在的原始日志，即使上次刚退出也不会因为最近采集过而跳过首次补读；补读退出期间的请求，并按稳定 ID 去重。**已采集的原始观测保存在 `~/.model-observatory/history.sqlite`**，源文件清理或暂时无法读取不会删除已入账历史；更新同一请求的用量会修订原记录。SQLite 事务和 WAL 保护写入，命名规则与跨来源匹配仍在查询时统一应用。暂停状态重启后保留，需要主动恢复。
 
 补读的前提是工具在托盘退出期间仍然记录并保留日志。关闭托盘期间，统一事件 HTTP 接口若无独立服务会不可达，调用方需保存并重试；未落日志的封闭客户端调用无法事后还原。不要将这个能力理解为全机流量拦截。
 

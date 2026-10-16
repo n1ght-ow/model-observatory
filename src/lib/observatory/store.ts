@@ -36,20 +36,26 @@ let archive: ObservationArchive | undefined;
 function history() { return archive ??= new ObservationArchive(join(storeDir, "history.sqlite")); }
 let pending: Promise<void> | null = null;
 let collectionError: string | null = null;
+let collectedThisSession = false;
 export function collectionState() { const state = history().state(); return { ...state, collecting: Boolean(pending) && !state.paused, error: collectionError }; }
 export async function collectNow(force = false) {
 	const state = collectionState();
-	if (state.paused || (!force && state.collectedAt && Date.now() - Date.parse(state.collectedAt) < 3000)) return state;
+	// A recent commit from the previous process must never defer cold-start catch-up.
+	if (state.paused || (!force && collectedThisSession && state.collectedAt && Date.now() - Date.parse(state.collectedAt) < 3000)) return state;
 	pending ??= (async () => {
 		const base = await collectObservations();
 		const path = join(storeDir, "events.jsonl");
 		const ingested = existsSync(path) ? await scanJsonl<ModelEvent, object>(path, "observatory-events-v1", () => ({}), (row) => [row as unknown as ModelEvent]) : [];
 		const stored = history().commit([...base.observations, ...ingested], [...base.coverage, { id: "events", name: "统一事件接口", state: ingested.length ? "connected" : "empty", count: ingested.length, latest: null, description: "统一事件持久保存。暂停时接收并排队，恢复后按稳定 ID 入账。" }]);
 		if (stored) await releaseCommittedJsonl();
+		collectedThisSession = stored;
 		collectionError = null;
 	})().catch((error) => { collectionError = "暂时无法采集新记录，已保留历史。请重试。"; throw error; }).finally(() => { pending = null; });
 	await pending;
 	return collectionState();
+}
+export async function closeCollection() {
+	try { await pending; } finally { archive?.close(); archive = undefined; }
 }
 export async function setCollectionPaused(paused: boolean) {
 	history().setPaused(paused);

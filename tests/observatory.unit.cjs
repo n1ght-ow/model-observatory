@@ -101,15 +101,13 @@ test("saved history is readable during slow catch-up, then refreshes after commi
 		const {ObservationArchive}=require('./src/lib/observatory/archive.ts');
 		const rows=JSON.parse(process.argv[2]),file=path.join(process.env.OBSERVATORY_DATA_DIR,'history.sqlite');
 		const archive=new ObservationArchive(file); archive.commit([rows[0]],[]); archive.close();
-		const {DatabaseSync}=require('node:sqlite'),sql=new DatabaseSync(file);
-		sql.prepare('UPDATE metadata SET value=? WHERE key=?').run('2000-01-01T00:00:00.000Z','collectedAt');sql.close();
 		let finish; const gate=new Promise(resolve=>finish=resolve);
 		require('./src/lib/observatory/readers.ts').collectObservations=()=>gate;
 		const store=require('./src/lib/observatory/store.ts');
 		(async()=>{
 			const timeout=new Promise((_,reject)=>setTimeout(()=>reject(new Error('History blocked on catch-up')),2000).unref());
 			const old=await Promise.race([store.getSnapshot('all'),timeout]);
-			assert.equal(old.totals.requests,1); assert.equal(old.collection.collecting,true);
+			assert.equal(old.totals.requests,1); assert.equal(old.collection.collecting,true,'Even a recent previous-process commit must start catch-up immediately');
 			finish({observations:rows,coverage:[]}); await store.collectNow(true);
 			assert.equal((await store.getSnapshot('all')).totals.requests,2);
 			const warm=await store.getSnapshot('all');

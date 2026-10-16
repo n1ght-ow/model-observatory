@@ -9,6 +9,7 @@ import * as observatory from "./observatory";
 import * as aliases from "./aliases";
 import * as events from "./events";
 import * as collection from "./collection";
+export { closeCollection } from "../lib/observatory/store";
 
 type Handler = (request: Request) => Promise<Response>;
 const routes: Record<string, { handlers: Record<string, Handler>; limit?: number }> = {
