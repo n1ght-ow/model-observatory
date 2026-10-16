@@ -1,9 +1,0 @@
-Generation mode: built-in image_gen
-
-Use case: logo-brand
-Asset type: production Windows desktop application icon for Model Observatory, a local AI model usage analytics app with a monochrome UI.
-Primary request: Create one exceptionally beautiful, restrained premium app icon: a graphite-black rounded-square tile containing a bold sculptural silver-white emblem. The emblem combines three ascending chunky rounded vertical columns with a single elegant elliptical orbital arc, suggesting measured model activity and an observatory. Unify the elements into one distinctive compact symbol.
-Style/medium: meticulously rendered tactile 3D, softly machined satin silver and deep charcoal, subtle bevels and soft studio highlights; refined productivity software aesthetic.
-Composition: straight-on orthographic front view, square image, tile centered and occupying about 90 percent of the canvas; large emblem with broad strong shapes and very generous clarity. Real transparent background outside the rounded-square tile. Keep all shadows inside the tile. No perspective tilt.
-Color palette: monochrome only, graphite black, silver and porcelain white. Strong contrast. Clean surfaces.
-Constraints: exactly one icon, no text, no letters, no numbers, no watermark, no surrounding presentation, no tiny chart marks, no grids, no fine hairlines. Readable silhouette at 16 and 32 pixels. The orbital arc must be substantial and simple, not multiple thin rings. Output the finished icon artwork alone.

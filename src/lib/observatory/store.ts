@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { releaseCommittedJsonl, scanJsonl } from "./jsonl";
-import { collectObservations } from "./readers";
+import { collectObservations, releaseCommittedReaders } from "./readers";
 import { eventTimes, makeSnapshot, nextSnapshotChange, reconcile } from "./ledger";
 import type { ModelEvent, ObservatorySnapshot } from "./types";
 import { ObservationArchive } from "./archive";
@@ -47,7 +47,13 @@ export async function collectNow(force = false) {
 		const path = join(storeDir, "events.jsonl");
 		const ingested = existsSync(path) ? await scanJsonl<ModelEvent, object>(path, "observatory-events-v1", () => ({}), (row) => [row as unknown as ModelEvent]) : [];
 		const stored = history().commit([...base.observations, ...ingested], [...base.coverage, { id: "events", name: "统一事件接口", state: ingested.length ? "connected" : "empty", count: ingested.length, latest: null, description: "统一事件持久保存。暂停时接收并排队，恢复后按稳定 ID 入账。" }]);
-		if (stored) await releaseCommittedJsonl();
+		if (stored) {
+			// A hidden window may not query again for hours. Do not pin the
+			// superseded ledger and every time-range snapshot until it returns.
+			if (cachedLedger && cachedLedger.revision !== history().revision) { cachedLedger = undefined; snapshots.clear(); }
+			releaseCommittedReaders();
+			await releaseCommittedJsonl();
+		}
 		collectedThisSession = stored;
 		collectionError = null;
 	})().catch((error) => { collectionError = "暂时无法采集新记录，已保留历史。请重试。"; throw error; }).finally(() => { pending = null; });
@@ -55,7 +61,7 @@ export async function collectNow(force = false) {
 	return collectionState();
 }
 export async function closeCollection() {
-	try { await pending; } finally { archive?.close(); archive = undefined; }
+	try { await pending; } finally { archive?.close(); archive = undefined; cachedLedger = undefined; snapshots.clear(); }
 }
 export async function setCollectionPaused(paused: boolean) {
 	history().setPaused(paused);
@@ -63,7 +69,7 @@ export async function setCollectionPaused(paused: boolean) {
 	if (!paused) await collectNow(true);
 	return collectionState();
 }
-let cachedLedger: { observations: ModelEvent[]; aliases: string; ledger: ReturnType<typeof reconcile>; times: Float64Array } | undefined;
+let cachedLedger: { revision: number; observations: ModelEvent[]; aliases: string; ledger: ReturnType<typeof reconcile>; times: Float64Array } | undefined;
 const snapshots = new Map<string, { base: ReturnType<ObservationArchive["read"]>; until: number; snapshot: ObservatorySnapshot }>();
 export async function getSnapshot(range: string) {
 	// Existing history is usable immediately, even while a cold scan catches up.
@@ -80,7 +86,7 @@ export async function getSnapshot(range: string) {
 	if (!cachedLedger || cachedLedger.observations !== base.observations || cachedLedger.aliases !== aliasKey) {
 		const ledger = reconcile(base.observations, aliases);
 		ledger.events.sort((a, b) => b.at.localeCompare(a.at));
-		cachedLedger = { observations: base.observations, aliases: aliasKey, ledger, times: eventTimes(ledger.events) };
+		cachedLedger = { revision: history().revision, observations: base.observations, aliases: aliasKey, ledger, times: eventTimes(ledger.events) };
 		snapshots.clear();
 	}
 	// Rebuild only when the records, coverage, or the set of rows inside the

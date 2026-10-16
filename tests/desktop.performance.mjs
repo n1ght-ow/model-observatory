@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { _electron } from "playwright";
 import { DatabaseSync, backup } from "node:sqlite";
-import { appendFile, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,10 @@ assert.match(label, /^[a-z0-9-]+$/);
 const scratch = await mkdtemp(path.join(os.tmpdir(), "ModelObservatoryPerformance-"));
 const store = path.join(scratch, "ledger"), home = path.join(scratch, "home");
 await mkdir(store); await mkdir(home);
+// Optional metadata-only source logs let the same harness measure collectors,
+// rather than only the archive/query path. Never read the real home implicitly.
+const sources = path.join(fixture, "sources");
+if (existsSync(sources)) await cp(sources, home, { recursive: true });
 const db = new DatabaseSync(path.join(fixture, "history.sqlite"), { readOnly: true });
 try { await backup(db, path.join(store, "history.sqlite")); } finally { db.close(); }
 await copyFile(path.join(fixture, "events.jsonl"), path.join(store, "events.jsonl"));
@@ -45,10 +50,11 @@ try {
 		const snapshot = await response.json();
 		return { ms: performance.now() - started, snapshot };
 	};
+	const catchup = await fetch(origin + "/api/observatory/collection", { method: "POST", headers: { "Content-Type": "application/json" }, body: '{"action":"collect"}' });
+	assert.equal(catchup.status, 200); await catchup.json();
 	const initial = (await query()).snapshot;
 	await page.getByRole("button", { name: "暂停实时刷新", exact: true }).click();
-	// Alternating ranges and waiting past the one-second snapshot TTL measures
-	// actual work, rather than reporting a same-tick response cache as throughput.
+	// Alternate ranges under normal cache reuse, including a collection cycle.
 	const queries = [];
 	for (let i = 0; i < 12; i++) { await sleep(1100); queries.push((await query(i % 2 ? "today" : "all")).ms); }
 	await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.show(); if (w.isMinimized()) w.restore(); });
@@ -61,6 +67,10 @@ try {
 	const requestView = await sampleMemory();
 	await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
 	const hidden = await sampleMemory();
+	// The public collect operation has a three-second debounce. An automatic
+	// timer just before this step must not turn the measured call into a no-op.
+	const lastCollection = await (await fetch(origin + "/api/observatory/collection")).json();
+	if (lastCollection.collectedAt) await sleep(Math.max(0, 3100 - (Date.now() - Date.parse(lastCollection.collectedAt))));
 	const added = { ...initial.requests[0], id: "performance-appended-event", requestId: "performance-appended-event", at: new Date().toISOString(), client: "Performance fixture", evidence: [{ id: "performance-appended-event", source: "event:Performance fixture", kind: "event" }] };
 	await appendFile(path.join(store, "events.jsonl"), JSON.stringify(added) + "\n");
 	const collectStart = performance.now();
@@ -88,7 +98,7 @@ try {
 		requestAnimationFrame(frame);
 	}));
 	const graphics = await app.evaluate(({ app }) => ({ hardwareAcceleration: app.isHardwareAccelerationEnabled(), features: app.getGPUFeatureStatus() }));
-	const result = { label, graphics, executable: path.resolve(executable), launchArgs, scroll, version: await app.evaluate(({ app }) => app.getVersion()), fixture: path.resolve(fixture), initialRequests: initial.totals.requests, afterAppendRequests: afterAppend.snapshot.totals.requests, firstUiMs, queryMs: queries, queryMedianMs: median(queries), visible, requestView, hidden, collectionMs, afterAppendQueryMs: afterAppend.ms, restoreMs, testedAt: new Date().toISOString(), method: "Fixed real metadata-only ledger and JSONL copy; isolated home/profile; packaged EXEs; executable paths may differ; startup timings reported separately; 12 queries alternating all/today, reusing a snapshot until the ledger or time-window membership changes; 8 one-second samples per window state; four-second foreground scroll afterwards; no forced GC, memory caps or working-set trimming. Electron metrics are KiB; summed working sets may include shared pages." };
+	const result = { label, graphics, executable: path.resolve(executable), launchArgs, scroll, version: await app.evaluate(({ app }) => app.getVersion()), fixture: path.resolve(fixture), sourceFixture: existsSync(sources), initialRequests: initial.totals.requests, afterAppendRequests: afterAppend.snapshot.totals.requests, firstUiMs, queryMs: queries, queryMedianMs: median(queries), visible, requestView, hidden, collectionMs, afterAppendQueryMs: afterAppend.ms, restoreMs, testedAt: new Date().toISOString(), method: "Fixed metadata-only ledger and JSONL copy, plus optional fixture/sources logs; isolated home/profile; packaged EXEs; executable paths may differ; startup timings reported separately; 12 queries alternating all/today, reusing a snapshot until the ledger or time-window membership changes; 8 one-second samples per window state; four-second foreground scroll afterwards; no forced GC, memory caps or working-set trimming. Electron metrics are KiB; summed working sets may include shared pages." };
 	await mkdir(path.join(root, "logs", "performance"), { recursive: true });
 	await writeFile(path.join(root, "logs", "performance", label + ".json"), JSON.stringify(result, null, 2));
 	console.log(JSON.stringify({ label, firstUiMs, requests: initial.totals.requests, queryMedianMs: result.queryMedianMs, visiblePrivateMiB: visible.privateMiB, requestPrivateMiB: requestView.privateMiB, hiddenPrivateMiB: hidden.privateMiB, collectionMs, restoreMs, scroll }));

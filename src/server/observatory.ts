@@ -13,8 +13,26 @@ export async function GET(request: Request) {
 		const rows = model || client || query ? snapshot.requests.filter((r) => (!model || r.model === model) && (!client || r.client === client) && (!query || `${r.model} ${r.rawModel} ${r.client} ${r.upstream}`.toLowerCase().includes(query))) : snapshot.requests;
 		if (url.searchParams.get("format") === "csv") {
 			const cell = (value: unknown) => `"${String(value ?? "").replace(/^[=+@-]/, "'$&").replaceAll('"', '""')}"`;
-			const csv = [["时间", "模型", "原始模型", "工具", "路由", "输入Token含缓存", "输出Token", "缓存Token", "状态", "证据来源", "计数单位"], ...rows.map((r) => [r.at, r.model, r.rawModel, r.client, r.upstream, r.input, r.output, r.cache, r.status, r.evidence.map((e) => e.source).join(" + "), r.scope === "turn" ? "会话请求轮次" : "模型调用 / 响应"])].map((r) => r.map(cell).join(",")).join("\r\n");
-			return new Response("\uFEFF" + csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="model-requests.csv"', "Cache-Control": "no-store" } });
+			const encoder = new TextEncoder();
+			let offset = 0;
+			// Pull one bounded batch at a time. The HTTP stream applies backpressure
+			// and cancellation instead of holding several full CSV copies in memory.
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode("\uFEFF" + ["时间", "模型", "原始模型", "工具", "路由", "输入Token含缓存", "输出Token", "缓存Token", "状态", "证据来源", "计数单位"].map(cell).join(",")));
+				},
+				pull(controller) {
+					const batch: string[] = [];
+					const end = Math.min(offset + 128, rows.length);
+					while (offset < end) {
+						const r = rows[offset++];
+						batch.push([r.at, r.model, r.rawModel, r.client, r.upstream, r.input, r.output, r.cache, r.status, r.evidence.map((e) => e.source).join(" + "), r.scope === "turn" ? "会话请求轮次" : "模型调用 / 响应"].map(cell).join(","));
+					}
+					if (batch.length) controller.enqueue(encoder.encode("\r\n" + batch.join("\r\n")));
+					if (offset === rows.length) controller.close();
+				},
+			});
+			return new Response(body, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="model-requests.csv"', "Cache-Control": "no-store" } });
 		}
 		const requested = Number(url.searchParams.get("limit"));
 		const pageSize = url.searchParams.has("limit") && Number.isFinite(requested) ? Math.max(0, Math.min(50, Math.floor(requested))) : 50;

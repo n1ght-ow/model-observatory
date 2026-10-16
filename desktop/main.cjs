@@ -135,6 +135,7 @@ async function collect() {
 	const request = new AbortController(); collectionRequest = request;
 	try {
 		const response = await fetch(origin + "/api/observatory/collection", { method: "POST", headers: { "Content-Type": "application/json", Origin: origin }, body: '{"action":"collect"}', signal: AbortSignal.any([request.signal, AbortSignal.timeout(90000)]) });
+		await response.arrayBuffer();
 		if (!response.ok) log(`Collection HTTP ${response.status}`);
 	} catch (error) { if (!quitting && !request.signal.aborted) log(`Collection: ${error.message}`); }
 	finally { if (collectionRequest === request) collectionRequest = undefined; }

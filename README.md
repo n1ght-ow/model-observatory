@@ -16,7 +16,7 @@ npm run desktop:build
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-desktop.ps1 -NoBuild -Start
 ```
 
-发行文件位于 `dist/desktop/`：`Model-Observatory-0.2.5-Setup.exe` 为安装包，`Model-Observatory-0.2.5-Portable.exe` 为免安装版。支持 Windows 10 / 11 x64。其他电脑只需要安装包或免安装 EXE，不需要源码、系统 Node.js、npm、Edge / WebView2 安装步骤或单独启动网页服务器。安装版创建桌面及开始菜单快捷方式。
+发行文件位于 `dist/desktop/`：`Model-Observatory-0.2.6-Setup.exe` 为安装包，`Model-Observatory-0.2.6-Portable.exe` 为免安装版。支持 Windows 10 / 11 x64。其他电脑只需要安装包或免安装 EXE，不需要源码、系统 Node.js、npm、Edge / WebView2 安装步骤或单独启动网页服务器。安装版创建桌面及开始菜单快捷方式。
 
 桌面采用 **Electron**，直接保留原有 React 界面与交互。应用自带 Chromium、Node 和轻量本机数据服务；窗口只加载本机打包资源，字体、脚本及样式不访问外部网络。不会打开或控制外部 Chrome / Edge，也不会在运行时执行 npm install、构建或搜索源码目录。首次打开会先显示本地启动页，本机服务失败时提供重试及诊断日志入口。
 
@@ -72,6 +72,8 @@ Windows 静态导出的分段预取文件会在构建时统一为客户端要求
 `src/lib/observatory/` 是唯一统计核心。SQLite 读取缓存在本进程复用，并通过 `data_version` 感知其他进程写入；未变化的观测跳过重复 SQL。原始记录在增量读取、归档和查询间共享不可变对象，修订使用新对象；不再长期保留每条记录的 JSON 字符串副本。本进程入库后直接更新内存账本，不重新读取解析整库；启动或其他连接写入后再通过 SQLite 迭代器加载。归一、去重及排序结果在记录或命名规则变化时更新，时间范围仍按当前时间筛选。查询结果会一直复用，直到账本、覆盖、命名规则或时间窗口里的记录集合发生变化，而不是每秒重建一次。界面按当前视图取数：总览只要最近 5 条，流水按 50 条分页，接入页不重复拉取流水；导出仍包含全部筛选结果。JSONL 在成功入库后释放已解析行，保留文件游标和解析状态，之后只读新增字节；文件被替换或变短后从头读取。DSH 按帧或行增量读取，工具输出等无关长行在确认类型后即丢弃，不再把整个会话文件放进内存。SQLite 使用有限页缓存且不把账本文件映射进进程。DSH 解码位于 `sources/dsh.ts`，文件遍历位于 `files.ts`，Grok 直接使用同一套增量 JSONL 读取。旧 `metrics/`、`collectors/`、CC Switch 导入、账户额度、旧仪表盘及未使用的组件库已经移除。
 
 查询和导出统一使用 `/api/observatory`，数据接入和命名规则分别使用其 `/events`、`/aliases` 子路径；`/api/health` 供桌面进程探测。已删除旧 `/api/metrics`、`/api/sources`、`/api/command-code`，旧地址现在返回 404。
+
+DSH 已入库的解码记录也会释放，保留独立序号、文件游标及未完成帧的读取位置。JSONL 的备用请求 ID 使用跨采集保留的序号，释放记录不会覆盖旧请求；压缩帧的校验尾部未写完时等待下次采集。未变化的 SQLite 元数据重读不会重建账本；后台提交使旧账本失效时立即释放查询缓存，窗口隐藏期间也不长期保留旧修订。ZCode / OpenCode 按 SQLite 迭代器转换记录，入库后只保留数据库与 WAL 签名，未变化时跳过全量记录重放。CSV 按 128 条分批输出并响应下载取消，避免同时构造整份导出内容的多个副本。大文件采集不再将整个事件数组展开为函数参数，避免记录量超过 JavaScript 参数上限时丢失整个来源。
 
 应用界面使用黑白灰配色，浅色白底黑字、深色黑底白字。模型与工具以名称区分，采集状态同时使用图标和文字；选中、悬停、焦点与错误提示均保留可读标记。样式使用原生 CSS，不依赖 Tailwind、shadcn 或图表组件库。
 

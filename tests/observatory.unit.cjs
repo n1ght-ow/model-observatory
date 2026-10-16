@@ -13,7 +13,7 @@ require.extensions[".ts"] = (module, file) => {
 const { normalizeModel } = require("../src/lib/observatory/identity.ts");
 const { reconcile, makeSnapshot, eventTimes, nextSnapshotChange } = require("../src/lib/observatory/ledger.ts");
 const { scanJsonl, releaseCommittedJsonl } = require("../src/lib/observatory/jsonl.ts");
-const { readDshSessionFile } = require("../src/lib/observatory/sources/dsh.ts");
+const { readDshSessionFile, releaseCommittedDsh } = require("../src/lib/observatory/sources/dsh.ts");
 const { ObservationArchive } = require("../src/lib/observatory/archive.ts");
 const now = Date.parse("2026-10-14T06:00:00Z");
 const row = (id, changes = {}) => ({ id, at: "2026-10-14T05:00:00Z", model: "gpt-6.1-sol", rawModel: "gpt-6.1-sol", client: "Codex", upstream: "未记录", input: 1000, output: 100, cache: 500, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source: "codex", kind: "session" }], ...changes });
@@ -52,6 +52,10 @@ test("archive shares immutable reader records, keeps prior snapshots stable and 
 		assert.ok(Object.isFrozen(first) && Object.isFrozen(first.evidence) && Object.isFrozen(first.evidence[0]));
 		archive.commit([first, second], []);
 		assert.equal(archive.read(), old);
+		const revision = archive.revision;
+		archive.commit([row("a"), row("b")], []);
+		assert.equal(archive.read(), old, "Unchanged SQLite metadata must not rebuild the ledger");
+		assert.equal(archive.revision, revision);
 		const revised = row("a", { output: 300 });
 		archive.commit([revised, second], []);
 		assert.equal(archive.read().observations.find((r) => r.id === "a"), revised);
@@ -211,6 +215,77 @@ test("DSH compressed frames append without losing earlier calls or step timing",
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("DSH releases committed plaintext and compressed records without reusing sequence IDs or losing pending data", async () => {
+	const { zstdCompressSync } = require("node:zlib");
+	const dir = await mkdtemp(join(tmpdir(), "observatory-dsh-release-"));
+	const message = (turn) => JSON.stringify({ type: "assistant/message", time: turn * 2000, data: { turn, step: 0, usage: { inputTokens: 7, outputTokens: turn } } }) + "\n";
+	try {
+		for (const compressed of [false, true]) {
+			const file = join(dir, compressed ? "session.jsonl.zstd" : "session.jsonl");
+			const encode = (text) => compressed ? zstdCompressSync(Buffer.from(text)) : Buffer.from(text);
+			const second = encode(message(2));
+			await writeFile(file, Buffer.concat([encode(message(1)), second.subarray(0, 8)]));
+			const first = await readDshSessionFile(file);
+			assert.deepEqual(first.map((r) => r.sequence), [0]);
+			releaseCommittedDsh();
+			assert.deepEqual(await readDshSessionFile(file), []);
+			await appendFile(file, second.subarray(8));
+			const appended = await readDshSessionFile(file);
+			assert.deepEqual(appended.map((r) => r.sequence), [1]);
+			assert.equal(appended[0].outputTokens, 2);
+			assert.equal(first.length, 1, "Published arrays remain unchanged");
+			assert.equal(first[0].sequence, 0);
+			releaseCommittedDsh();
+			await writeFile(file, encode(message(3)));
+			await utimes(file, new Date(), new Date(Date.now() + 2000));
+			assert.deepEqual((await readDshSessionFile(file)).map((r) => [r.sequence, r.outputTokens]), [[0, 3]]);
+		}
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("DSH waits for an incomplete Zstandard checksum before decoding the next frame", async () => {
+	const { zstdCompressSync, constants } = require("node:zlib");
+	const dir = await mkdtemp(join(tmpdir(), "observatory-dsh-checksum-"));
+	const file = join(dir, "session.jsonl.zstd");
+	const frame = (turn) => zstdCompressSync(Buffer.from(JSON.stringify({ type: "assistant/message", time: turn * 2000, data: { usage: { outputTokens: turn } } }) + "\n"), { params: { [constants.ZSTD_c_checksumFlag]: 1 } });
+	try {
+		const first = frame(1), second = frame(2);
+		await writeFile(file, Buffer.concat([first, second.subarray(0, second.length - 1)]));
+		assert.deepEqual((await readDshSessionFile(file)).map((r) => r.outputTokens), [1]);
+		await appendFile(file, second.subarray(-1));
+		assert.deepEqual((await readDshSessionFile(file)).map((r) => r.outputTokens), [1, 2]);
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("collectors retain large single-file histories and SQLite token semantics across incremental polls", async () => {
+	const { execFileSync } = require("node:child_process");
+	const dir = await mkdtemp(join(tmpdir(), "observatory-reader-volume-"));
+	const worker = `const fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),assert=require('node:assert/strict'),{DatabaseSync}=require('node:sqlite');
+		require.extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(fs.readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,f);
+		const home=process.env.HOME;
+		const grok=path.join(home,'.grok','sessions','fixture','chat_history.jsonl');fs.mkdirSync(path.dirname(grok),{recursive:true});
+		fs.writeFileSync(grok,(JSON.stringify({type:'assistant',model_id:'grok-fixture'})+'\\n').repeat(140000));
+		const setup=(name,sql)=>{const file=path.join(home,...name);fs.mkdirSync(path.dirname(file),{recursive:true});const db=new DatabaseSync(file);try{db.exec(sql);}finally{db.close();}};
+		setup(['.zcode','cli','db','db.sqlite'],"CREATE TABLE model_usage(id,model_id,provider_id,status,started_at,duration_ms,input_tokens,output_tokens,cache_read_input_tokens);INSERT INTO model_usage VALUES('z','z-model','route','completed','2026-10-14T05:00:00Z',100,10,3,4)");
+		setup(['.local','share','opencode','opencode.db'],\`CREATE TABLE message(id,data);INSERT INTO message VALUES('o','{"role":"assistant","modelID":"o-model","tokens":{"input":10,"output":3,"reasoning":2,"cache":{"read":4,"write":1}},"time":{"created":1000,"completed":2000}}')\`);
+		(async()=>{
+			const {collectObservations,releaseCommittedReaders}=require('./src/lib/observatory/readers.ts'),{releaseCommittedJsonl}=require('./src/lib/observatory/jsonl.ts');
+			const initial=await collectObservations();assert.ok(!initial.coverage.some(r=>r.state==='error'));
+			const grokRows=initial.observations.filter(r=>r.client==='Grok CLI');assert.equal(grokRows.length,140000);assert.equal(new Set(grokRows.map(r=>r.id)).size,140000);
+			const z=initial.observations.find(r=>r.client==='ZCode'),o=initial.observations.find(r=>r.client==='OpenCode');
+			assert.deepEqual([z.input,z.output,z.cache],[10,3,4]);assert.deepEqual([o.input,o.output,o.cache],[15,5,4]);
+			assert.equal((await collectObservations()).observations.find(r=>r.client==='ZCode'),z);
+			await releaseCommittedJsonl();releaseCommittedReaders();fs.appendFileSync(grok,JSON.stringify({type:'assistant',model_id:'grok-fixture'})+'\\n');
+			const next=await collectObservations(),appended=next.observations.filter(r=>r.client==='Grok CLI');assert.equal(appended.length,1);assert.ok(!grokRows.some(r=>r.id===appended[0].id));assert.ok(!next.observations.some(r=>r.client==='ZCode'||r.client==='OpenCode'));
+			const zdb=new DatabaseSync(path.join(home,'.zcode','cli','db','db.sqlite'));zdb.exec('UPDATE model_usage SET output_tokens=5');zdb.close();const stamp=new Date(Date.now()+2000);fs.utimesSync(path.join(home,'.zcode','cli','db','db.sqlite'),stamp,stamp);
+			const revised=(await collectObservations()).observations.find(r=>r.client==='ZCode');assert.equal(revised.id,z.id);assert.equal(revised.output,5);
+		})().catch(e=>{console.error(e);process.exitCode=1});`;
+	try {
+		execFileSync(process.execPath, ["-e", worker], { cwd: process.cwd(), env: { ...process.env, USERPROFILE: dir, HOME: dir, APPDATA: dir }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
+	} catch (error) { throw new Error(error.stderr || error.message); }
+	finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("usage coverage distinguishes missing values, known zero and partial reports", () => {
 	const unknown = row("unknown", { rawModel: "unknown-usage", input: null, output: null, cache: null });
 	const zero = row("zero", { rawModel: "known-zero", input: 0, output: 0, cache: 0 });
@@ -337,6 +412,22 @@ test("committed JSONL keeps its cursor and returns only rows appended afterward"
 		await releaseCommittedJsonl("release-fixture");
 		await writeFile(path, '{"n":3}\n');
 		assert.deepEqual(await scan(), [3]);
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("fallback JSONL IDs survive committed-row release and restart from the same ordinals on replay", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "observatory-jsonl-ordinal-"));
+	const path = join(dir, "events.jsonl");
+	const scan = () => scanJsonl(path, "ordinal-fixture", () => ({}), (r, _state, ordinal) => r.skip ? [] : [{ id: ordinal, value: r.n }]);
+	try {
+		await writeFile(path, '{"skip":true}\ninvalid\n{"n":1}\n{"n":');
+		assert.deepEqual(await scan(), [{ id: 0, value: 1 }]);
+		await releaseCommittedJsonl("ordinal-fixture");
+		await appendFile(path, '2}\n{"n":3}\n');
+		assert.deepEqual(await scan(), [{ id: 1, value: 2 }, { id: 2, value: 3 }]);
+		await releaseCommittedJsonl("ordinal-fixture");
+		await writeFile(path, '{"n":4}\n');
+		assert.deepEqual(await scan(), [{ id: 0, value: 4 }]);
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 test("multi-megabyte incomplete JSONL lines and replacement by a larger file preserve exact records", async () => {

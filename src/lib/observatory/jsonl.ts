@@ -1,21 +1,28 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 
-type FileState<T, S> = { offset: number; mtime: number; identity: string; path: string; tail: Buffer[]; tailBytes: number; rows: T[]; state: S };
+type FileState<T, S> = { offset: number; mtime: number; identity: string; path: string; tail: Buffer[]; tailBytes: number; rows: T[]; emitted: number; state: S };
 const files = new Map<string, FileState<unknown, unknown>>();
 
 /** The archive keeps the parsed records. Drop the reader's extra row list, but
  * keep the byte cursor and parser state so the next poll reads only an append.
  * A rotated or deleted log is forgotten, including any partial multi-megabyte tail. */
 export async function releaseCommittedJsonl(prefix = "observatory-") {
-	await Promise.all([...files.entries()].filter(([key]) => key.startsWith(prefix)).map(async ([key, file]) => {
+	const release = async (key: string, file: FileState<unknown, unknown>) => {
 		try {
 			const info = await stat(file.path);
 			const identity = `${info.dev}:${info.ino}:${info.birthtimeMs}`;
 			if (identity !== file.identity || info.size < file.offset) files.delete(key);
 			else file.rows = [];
 		} catch { files.delete(key); }
-	}));
+	};
+	// A large session directory must not enqueue a stat and a promise per file.
+	let batch: Promise<void>[] = [];
+	for (const [key, file] of files) if (key.startsWith(prefix)) {
+		batch.push(release(key, file));
+		if (batch.length === 32) { await Promise.all(batch); batch = []; }
+	}
+	await Promise.all(batch);
 }
 
 /** Commit only complete lines. A live writer's partial JSON is retried next poll. */
@@ -26,7 +33,7 @@ export async function scanJsonl<T, S>(path: string, namespace: string, initial: 
 	const key = `${namespace}:${path}`;
 	let file = files.get(key) as FileState<T, S> | undefined;
 	if (!file || file.identity !== identity || info.size < file.offset || (info.size === file.offset && info.mtimeMs !== file.mtime)) {
-		file = { offset: 0, mtime: 0, identity, path, tail: [], tailBytes: 0, rows: [], state: initial() };
+		file = { offset: 0, mtime: 0, identity, path, tail: [], tailBytes: 0, rows: [], emitted: 0, state: initial() };
 	}
 	if (file.offset === info.size && file.mtime === info.mtimeMs) return file.rows;
 	if (info.size > file.offset) {
@@ -43,7 +50,13 @@ export async function scanJsonl<T, S>(path: string, namespace: string, initial: 
 				file.tail = []; file.tailBytes = 0;
 				from = end + 1;
 				if (interesting && !interesting(line)) continue;
-				try { file.rows.push(...parse(JSON.parse(line), file.state, file.rows.length)); } catch { /* A malformed observation cannot erase valid history. */ }
+				try {
+					// Fallback request IDs use this ordinal. Releasing committed rows
+					// must not restart it and overwrite an earlier independent call.
+					const rows = parse(JSON.parse(line), file.state, file.emitted);
+					for (const row of rows) file.rows.push(row);
+					file.emitted += rows.length;
+				} catch { /* A malformed observation cannot erase valid history. */ }
 			}
 			if (from < bytes.length) {
 				// A few unfinished bytes must not pin the entire 256 KiB read buffer

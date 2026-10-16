@@ -11,6 +11,8 @@ export class ObservationArchive {
 	private dataVersion = -1;
 	private accepted = new Map<string, ModelEvent>();
 	private loaded = false;
+	private observationRevision = 0;
+	get revision() { return this.observationRevision; }
 	private observations?: ModelEvent[];
 	private cachedRead?: { observations: ModelEvent[]; coverage: Coverage[] };
 	private cachedState?: CollectionState;
@@ -49,6 +51,7 @@ export class ObservationArchive {
 		// for another connection's commit, not for this connection's own writes.
 		const version = Number(this.dataVersionQuery.get()?.data_version);
 		if (version !== this.dataVersion) {
+			this.observationRevision++;
 			this.dataVersion = version;
 			this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined;
 		}
@@ -70,17 +73,18 @@ export class ObservationArchive {
 			// transaction; the cached state may predate this lock.
 			if (this.value("paused") === "true") { this.db.exec("ROLLBACK"); return false; }
 			// Stream fragments and copied logs can replay an older, shorter revision.
-			let changed = false;
+			let changed = false, recordsChanged = false;
 			for (const event of observations) {
 				const previous = this.accepted.get(event.id);
 				if (previous === event) continue;
 				if (previous && (event.output ?? -1) < (previous.output ?? -1)) continue;
 				const serialized = JSON.stringify(event);
-				if ((previous && JSON.stringify(previous) === serialized) || Number(this.insertEvent.run(event.id, serialized).changes)) {
-					this.accepted.set(event.id, this.immutable(event)); this.observations = undefined; changed = true;
+				if (previous && JSON.stringify(previous) === serialized) continue;
+				if (Number(this.insertEvent.run(event.id, serialized).changes)) {
+					this.accepted.set(event.id, this.immutable(event)); this.observations = undefined; changed = true; recordsChanged = true;
 				} else if (!previous) {
 					this.accepted.set(event.id, this.immutable(JSON.parse(String(this.readEvent.get(event.id)?.event))));
-					this.observations = undefined; changed = true;
+					this.observations = undefined; changed = true; recordsChanged = true;
 				}
 			}
 			const encodedCoverage = JSON.stringify(coverage);
@@ -89,6 +93,7 @@ export class ObservationArchive {
 			this.db.exec("COMMIT");
 			this.cachedState = undefined;
 			if (changed) this.cachedRead = undefined;
+			if (recordsChanged) this.observationRevision++;
 			return true;
 		} catch (error) { this.db.exec("ROLLBACK"); this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; throw error; }
 	}

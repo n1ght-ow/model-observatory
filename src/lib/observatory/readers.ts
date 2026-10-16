@@ -5,7 +5,7 @@ import { stat } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { listFiles } from "./files";
-import { readDshUsageEvents } from "./sources/dsh";
+import { readDshUsageEvents, releaseCommittedDsh } from "./sources/dsh";
 import { readCursor } from "./sources/cursor";
 import { scanJsonl } from "./jsonl";
 import type { Coverage, ModelEvent } from "./types";
@@ -25,7 +25,7 @@ async function readCodex(): Promise<ModelEvent[]> {
 	const files = (await Promise.all([listFiles(home(".codex", "sessions"), /\.jsonl$/, 5), listFiles(home(".codex", "archived_sessions"), /\.jsonl$/, 2)])).flat();
 	const output: ModelEvent[] = [];
 	for (const file of files) {
-		output.push(...await scanJsonl(file, "observatory-codex-v1", () => ({ model: "unknown", client: "Codex", session: basename(file), total: "", counter: 0 }), (record, state) => {
+		for (const row of await scanJsonl(file, "observatory-codex-v1", () => ({ model: "unknown", client: "Codex", session: basename(file), total: "", counter: 0 }), (record, state) => {
 			const payload = obj(record.payload);
 			if (record.type === "session_meta") {
 				state.session = text(payload.id, state.session);
@@ -43,7 +43,7 @@ async function readCodex(): Promise<ModelEvent[]> {
 			return [event("codex", `${state.session}:${state.counter}:${total}`, text(record.timestamp), state.model, state.client, {
 				input: num(usage.input_tokens), output: num(usage.output_tokens), cache: num(usage.cached_input_tokens), identity: "configured",
 			})];
-		}, (line) => /"(?:session_meta|turn_context|token_count)"/.test(line)));
+		}, (line) => /"(?:session_meta|turn_context|token_count)"/.test(line))) output.push(row);
 	}
 	return output;
 }
@@ -70,7 +70,7 @@ async function readRouter(): Promise<ModelEvent[]> {
 async function readClaude(): Promise<ModelEvent[]> {
 	const files = await listFiles(home(".claude", "projects"), /\.jsonl$/, 5);
 	const output: ModelEvent[] = [];
-	for (const file of files) output.push(...await scanJsonl(file, "observatory-claude-v1", () => ({}), (row, _state, line) => {
+	for (const file of files) for (const row of await scanJsonl(file, "observatory-claude-v1", () => ({}), (row, _state, line) => {
 		if (row.type !== "assistant") return [];
 		const message = obj(row.message), usage = obj(message.usage);
 		if (!message.model || message.model === "<synthetic>") return [];
@@ -80,7 +80,7 @@ async function readClaude(): Promise<ModelEvent[]> {
 			input: message.usage ? num(usage.input_tokens) + cache + num(usage.cache_creation_input_tokens) : null,
 			output: message.usage ? num(usage.output_tokens) : null, cache: message.usage ? cache : null,
 		})];
-	}, (line) => line.includes('"assistant"')));
+	}, (line) => line.includes('"assistant"'))) output.push(row);
 	return output;
 }
 
@@ -88,7 +88,7 @@ async function readAgent(source: "pi" | "command-code"): Promise<ModelEvent[]> {
 	const root = source === "pi" ? home(".pi", "agent", "sessions") : home(".commandcode", "projects");
 	const files = (await listFiles(root, /\.jsonl$/, 5)).filter((file) => !file.includes("checkpoint"));
 	const output: ModelEvent[] = [];
-	for (const file of files) output.push(...await scanJsonl(file, `observatory-${source}-v1`, () => ({}), (row, _state, line) => {
+	for (const file of files) for (const row of await scanJsonl(file, `observatory-${source}-v1`, () => ({}), (row, _state, line) => {
 		const message = obj(row.message);
 		if (row.type !== "message" || message.role !== "assistant") return [];
 		const usage = obj(source === "pi" ? message.usage : row.usage);
@@ -101,7 +101,7 @@ async function readAgent(source: "pi" | "command-code"): Promise<ModelEvent[]> {
 			input: input + cache + write, output: num(usage.output ?? usage.outputTokens), cache,
 			status: message.stopReason === "error" ? "error" : "unknown",
 		})];
-	}, (line) => line.includes('"message"')));
+	}, (line) => line.includes('"message"'))) output.push(row);
 	return output;
 }
 
@@ -114,25 +114,25 @@ async function readDatabase(source: "zcode" | "opencode"): Promise<ModelEvent[]>
 	if (cached?.signature === signature) return cached.rows;
 	const db = new DatabaseSync(path, { readOnly: true });
 	try {
-		let rows: ModelEvent[];
+		const rows: ModelEvent[] = [];
 		if (source === "zcode") {
-			const records = db.prepare("SELECT id, model_id, provider_id, status, started_at, duration_ms, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens FROM model_usage WHERE status IN ('completed','error','cancelled')").all() as Record<string, unknown>[];
-			rows = records.map((r) => event(source, text(r.id), new Date(r.started_at as string | number).toISOString(), text(r.model_id, "unknown"), "ZCode", {
+			const records = db.prepare("SELECT id, model_id, provider_id, status, started_at, duration_ms, input_tokens, output_tokens, cache_read_input_tokens FROM model_usage WHERE status IN ('completed','error','cancelled')").iterate();
+			for (const r of records) rows.push(event(source, text(r.id), new Date(r.started_at as string | number).toISOString(), text(r.model_id, "unknown"), "ZCode", {
 				requestId: text(r.id), upstream: text(r.provider_id, "未记录"), input: typeof r.input_tokens === "number" ? num(r.input_tokens) : null,
 				output: typeof r.output_tokens === "number" ? num(r.output_tokens) : null, cache: typeof r.cache_read_input_tokens === "number" ? num(r.cache_read_input_tokens) : null,
 				status: r.status === "completed" ? "ok" : "error", duration: num(r.duration_ms) || null,
 			}));
 		} else {
 			// Select only usage metadata; never load prompts, paths or message bodies.
-			const records = db.prepare("SELECT id, json_extract(data,'$.modelID') AS model, json_extract(data,'$.providerID') AS provider, json_extract(data,'$.tokens') AS tokens, json_extract(data,'$.time.created') AS started, json_extract(data,'$.time.completed') AS ended, json_extract(data,'$.error.name') AS error FROM message WHERE json_extract(data,'$.role')='assistant' AND json_extract(data,'$.time.completed') IS NOT NULL").all() as Record<string, unknown>[];
-			rows = records.map((r) => {
+			const records = db.prepare("SELECT id, json_extract(data,'$.modelID') AS model, json_extract(data,'$.providerID') AS provider, json_extract(data,'$.tokens') AS tokens, json_extract(data,'$.time.created') AS started, json_extract(data,'$.time.completed') AS ended, json_extract(data,'$.error.name') AS error FROM message WHERE json_extract(data,'$.role')='assistant' AND json_extract(data,'$.time.completed') IS NOT NULL").iterate();
+			for (const r of records) {
 				const tokens = obj(JSON.parse(text(r.tokens, "{}"))), cache = obj(tokens.cache);
-				return event(source, text(r.id), new Date(num(r.ended)).toISOString(), text(r.model, "unknown"), "OpenCode", {
+				rows.push(event(source, text(r.id), new Date(num(r.ended)).toISOString(), text(r.model, "unknown"), "OpenCode", {
 					requestId: text(r.id), upstream: text(r.provider, "未记录"), input: r.tokens ? num(tokens.input) + num(cache.read) + num(cache.write) : null,
 					output: r.tokens ? num(tokens.output) + num(tokens.reasoning) : null, cache: r.tokens ? num(cache.read) : null,
 					status: r.error ? "error" : "unknown", duration: num(r.ended) - num(r.started) || null,
-				});
-			});
+				}));
+			}
 		}
 		databases.set(source, { signature, rows });
 		return rows;
@@ -142,12 +142,12 @@ async function readDatabase(source: "zcode" | "opencode"): Promise<ModelEvent[]>
 async function readGrok(): Promise<ModelEvent[]> {
 	const files = await listFiles(home(".grok", "sessions"), /chat_history\.jsonl$/, 4);
 	const output: ModelEvent[] = [];
-	for (const file of files) output.push(...await scanJsonl(file, "observatory-grok-v1", () => ({}), (row, _state, line) => {
+	for (const file of files) for (const row of await scanJsonl(file, "observatory-grok-v1", () => ({}), (row, _state, line) => {
 		if (row.type !== "assistant" || typeof row.model_id !== "string" || !row.model_id) return [];
 		// Grok history has no reliable call time or usage. The sentinel is never
 		// included in a dated range or chart; the call remains visible in all history.
 		return [event("grok-cli", `${hash(file)}:${line}`, "1970-01-01T00:00:00.000Z", row.model_id, "Grok CLI", { timeKnown: false })];
-	}));
+	})) output.push(row);
 	return output;
 }
 
@@ -172,6 +172,12 @@ const readers: Reader[] = [
 	{ id: "command-code", name: "Command Code CLI", description: "读取本地逐响应 usage。套餐额度不是请求数量。", read: () => readAgent("command-code") },
 	{ id: "grok-cli", name: "Grok CLI", description: "本地记录缺少可靠时间与 Token。仅计入全部历史，不以文件修改时间冒充调用时间。", read: readGrok },
 ];
+
+/** The archive owns committed rows; unchanged databases need only a signature. */
+export function releaseCommittedReaders() {
+	for (const database of databases.values()) database.rows = [];
+	releaseCommittedDsh();
+}
 
 export async function collectObservations() {
 	const results = await Promise.all(readers.map(async (reader) => {

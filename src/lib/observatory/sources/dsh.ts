@@ -1,8 +1,9 @@
 import { createReadStream } from "node:fs";
-import { open, readdir, stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import * as zlib from "node:zlib";
+import { listFiles } from "../files";
 
 /**
  * DeepSeek Harness (DSH) session usage.
@@ -93,6 +94,7 @@ function scanZstdFrames(buffer: Buffer): {
 			}
 		}
 		if (checksum) {
+			if (buffer.length - offset < 4) return { frames };
 			offset += 4;
 		}
 		frames.push({ start, end: offset });
@@ -225,6 +227,7 @@ type FileCacheEntry = {
 	/** Detects a rewrite that grows without being a pure append. */
 	prefix: Buffer;
 	events: DshUsageEvent[];
+	sequence: number;
 	/** `turn:step` → `step/start` time, kept so appended frames can time a turn. */
 	stepStarts: Map<string, number>;
 	sessionId: string;
@@ -233,37 +236,10 @@ type FileCacheEntry = {
 };
 
 const fileCache = new Map<string, FileCacheEntry>();
-let cachedScan: { at: number; files: string[] } | null = null;
 
-const SCAN_TTL_MS = 4_000;
-
-async function listSessionFiles(): Promise<string[]> {
-	if (cachedScan && Date.now() - cachedScan.at < SCAN_TTL_MS) {
-		return cachedScan.files;
-	}
-	const files: string[] = [];
-	const walk = async (dir: string, depth: number): Promise<void> => {
-		if (depth < 0) {
-			return;
-		}
-		let entries;
-		try {
-			entries = await readdir(dir, { withFileTypes: true });
-		} catch {
-			return;
-		}
-		for (const entry of entries) {
-			const path = join(dir, entry.name);
-			if (entry.isDirectory()) {
-				await walk(path, depth - 1);
-			} else if (/^session.*\.jsonl(\.zstd)?$/.test(entry.name)) {
-				files.push(path);
-			}
-		}
-	};
-	await walk(DSH_SESSIONS_DIR, 3);
-	cachedScan = { at: Date.now(), files };
-	return files;
+/** Committed observations live in SQLite; retain only the incremental decoder. */
+export function releaseCommittedDsh() {
+	for (const file of fileCache.values()) file.events = [];
 }
 
 async function prefixMatches(path: string, prefix: Buffer) {
@@ -300,6 +276,7 @@ export async function readDshSessionFile(path: string): Promise<DshUsageEvent[]>
 	let reset = !cached || info.size < cached.size || sameSizeRewrite;
 	if (!reset && cached && !(await prefixMatches(path, cached.prefix))) reset = true;
 	const events = reset ? [] : [...cached!.events];
+	let sequence = reset ? 0 : cached!.sequence;
 	const stepStarts = reset ? new Map<string, number>() : cached!.stepStarts;
 	const session = { id: reset || !cached ? path : cached.sessionId };
 	const start = reset ? 0 : cached!.parsedBytes;
@@ -318,7 +295,7 @@ export async function readDshSessionFile(path: string): Promise<DshUsageEvent[]>
 			}
 			const event = toUsageEvent(record, session, stepStarts);
 			if (event) {
-				event.sequence = events.length;
+				event.sequence = sequence++;
 				events.push(event);
 			}
 		});
@@ -369,20 +346,20 @@ export async function readDshSessionFile(path: string): Promise<DshUsageEvent[]>
 		}
 	}
 	fileCache.set(path, {
-		size: info.size, mtimeMs: info.mtimeMs, parsedBytes: info.size - pending.length, prefix, events, stepStarts, sessionId: session.id, skippingLine,
+		size: info.size, mtimeMs: info.mtimeMs, parsedBytes: info.size - pending.length, prefix, events, sequence, stepStarts, sessionId: session.id, skippingLine,
 	});
 	return events;
 }
 
 /** Every usage event DSH has recorded; the shared ledger owns display ordering. */
 export async function readDshUsageEvents(): Promise<DshUsageEvent[]> {
-	const files = await listSessionFiles();
+	const files = await listFiles(DSH_SESSIONS_DIR, /^session.*\.jsonl(\.zstd)?$/, 3);
 	const live = new Set(files);
 	for (const path of fileCache.keys()) if (!live.has(path)) fileCache.delete(path);
 	const all: DshUsageEvent[] = [];
 	for (const path of files) {
 		try {
-			all.push(...(await readDshSessionFile(path)));
+			for (const event of await readDshSessionFile(path)) all.push(event);
 		} catch {
 			// A session that cannot be read must not break the dashboard.
 		}
