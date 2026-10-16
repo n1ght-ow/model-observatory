@@ -1,0 +1,9 @@
+{
+  "name": "model-observatory-desktop",
+  "version": "0.2.4",
+  "private": true,
+  "description": "Local model usage observatory",
+  "author": "Model Observatory",
+  "main": "main.cjs",
+  "dependencies": {}
+}

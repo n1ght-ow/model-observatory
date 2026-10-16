@@ -13,51 +13,59 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## The invariant that matters
 
-`tray/` renders `http://127.0.0.1:3000` in WebView2. **No drawing code, no second UI, no
-design tokens in `tray/`.** It was once a 9,824-line GDI+ reimplementation of the whole
-frontend; it is not going back.
+The user clarified on 2026-10-16 that the desktop app must retain the original
+React UI and run independently on another Windows computer. `desktop/` is the
+Electron host; it packages a lean Node data service and exported UI assets.
+Keep the React UI and observatory core shared. Do not maintain another native
+UI. The retired C# and WebView2 implementations have been removed.
+The installed app must not depend on a source checkout, system Node/npm, a
+separate browser, or external network resources to display its interface.
+The EXE is the only end-user entrypoint. UI previews and automation run in Electron, not a standalone browser.
+Page and asset requests require the current desktop session header. Retain the React
+sources and bundled rendering engine; removing them breaks the desktop UI.
 
-## Adding to the tray
+## Build and lifecycle
 
-One row in `RegisterControlHandlers()` (`tray/Program.cs`) plus one method. It is then
-reachable as `--ctl <cmd>` and, if the page needs it, through the bridge
-(`src/lib/tray/bridge.ts`).
-
-Do not add a `--mode`, a top-level constant, or a new diagnostic shell.
-
-## Build
-
-- `csc.exe` (.NET Framework), `/langversion:5`. No string interpolation, no `?.`/`??`,
-  no `async Main`, no `out var _`.
+- `npm run desktop:prepare` exports the UI and bundles the built-in-Node-only
+  data service. `desktop:dev` uses these same staged assets. Next must not be
+  loaded at runtime. Normalize Windows segment payload names during staging.
+- `npm run desktop:build` produces the NSIS installer and portable executable.
+- Retry must stop the existing utility process before launching its replacement.
+  Every collection timer and request belongs to that service lifecycle.
+- Keep software drawing for this table/SVG UI; measure scrolling before changing
+  graphics settings. Do not silently re-enable the hardware compositor.
+- Window hiding stops UI polling; main-process collection continues every 15 seconds.
+- Existing history can be shown during catch-up. Preserve explicit collection state.
+- SQLite caches must notice other connections' commits through `data_version`.
+- Published reader/archive events are immutable and shared. Create new records for
+  revisions and reconciliation; never mutate cached evidence in place.
+- Measure memory with all owned processes; do not force GC or trim working sets
+  to present an artificial improvement. Keep collection intervals unchanged.
 - Keep `.ps1` ASCII. Windows PowerShell reads a BOM-less `.ps1` as ANSI, so a Chinese
   selector arrives mangled and silently matches nothing.
 - Under `$ErrorActionPreference = "Stop"`, a native command writing to **stderr** is a
   terminating error. Wrap `git` / `node` calls and restore the preference.
 - `Start-Process -ArgumentList` joins with spaces and does not quote. Quote any argument
   that contains one.
-- Building stops the running tray first: the executable is locked while it runs.
+- Quit the installed app with `ModelObservatory.exe --quit` before upgrading it.
 
 ## Verify
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1   # exits non-zero on failure
-npm run test:e2e                                                    # page only
+npm run desktop:build
+npm run test:desktop
+npm run test:ui
 ```
 
-`verify-tray.ps1` drives the running tray over the control channel and asserts every
-threshold. It is a gate: if it fails, that is the answer. Do not widen a threshold to make
-it pass, and do not describe something as measured when it was not.
+Desktop checks must exercise the packaged executable, local-only requests,
+window lifecycle and the bundled data service. Do not describe something as
+measured when it was not, or widen a threshold to make a test pass.
 
 ## Traps that have already cost time
 
-- `next start` reads its build manifest at startup. After `npm run build`, restart the
-  server or it keeps serving the previous build's chunks.
-- `JavaScriptSerializer` returns nested arrays as `ArrayList`, not `object[]`.
-- `Convert.ToString(true)` is `"True"`, not `"true"`.
-- Quit through the channel (`--ctl quit`) so the WebView is disposed. Killing the process
-  leaves `msedgewebview2` children holding the profile lock.
-- The flyout must stay on dashboard pages. Same origin is not enough: `/api/` lives there
-  too, and a bare JSON response has no way back.
+- After preparing a new build, restart the desktop preview to load its staged service.
+- Quit through the app menu or `--quit` so its owned service is disposed.
+- Desktop navigation stays on dashboard pages; API responses are not UI routes.
 - The codex-router keeps the built-in `openai` provider id and points `openai_base_url`
   at its own loopback. A session can therefore say `model_provider = "openai"` and still
   have gone through the router — so "did this go through the router" is answered by where

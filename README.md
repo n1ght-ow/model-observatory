@@ -1,1046 +1,152 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Model Observatory
 
-## Getting Started
+本机模型用量账本。**具体模型是主轴，工具和路由是维度。** 同一模型在 Codex、pi、ZCode、DeepSeek Harness 等工具中的调用汇总到同一行；不同模型版本不会因为属于同一家族而合并。
 
-First, run the development server:
+## Windows 桌面应用
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+日常只需安装并打开 EXE，桌面应用是唯一用户使用入口。无需另外运行网页版、启动浏览器或执行 npm 命令。
+
+源码中的 React 界面和轻量 Node 数据服务随 EXE 打包；Next 只在构建时导出静态界面，运行时不加载 Next 服务器或 node_modules。Electron 自带的 Chromium 负责在应用窗口内绘制界面，并不依赖系统安装的 Chrome / Edge。
+
+以下命令仅供从源码构建和维护：
+
+```powershell
+npm run desktop:build
+# Install or upgrade from this checkout:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-desktop.ps1 -NoBuild -Start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+发行文件位于 `dist/desktop/`：`Model-Observatory-0.2.4-Setup.exe` 为安装包，`Model-Observatory-0.2.4-Portable.exe` 为免安装版。支持 Windows 10 / 11 x64。其他电脑只需要安装包或免安装 EXE，不需要源码、系统 Node.js、npm、Edge / WebView2 安装步骤或单独启动网页服务器。安装版创建桌面及开始菜单快捷方式。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+桌面采用 **Electron**，直接保留原有 React 界面与交互。应用自带 Chromium、Node 和轻量本机数据服务；窗口只加载本机打包资源，字体、脚本及样式不访问外部网络。不会打开或控制外部 Chrome / Edge，也不会在运行时执行 npm install、构建或搜索源码目录。首次打开会先显示本地启动页，本机服务失败时提供重试及诊断日志入口。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+界面使用软件绘制，减少 Windows 图形驱动的常驻分配；适合当前表格和 SVG 图表。仍支持深浅主题、系统标题栏和窗口缩放。这个单窗口应用不启用备用渲染进程、后退缓存、独立音频进程，以及翻译、媒体路由和优化提示这些用不到的 Chromium 服务。
 
-## Monitoring data sources
+应用图标采用石墨黑底、银白柱形与观测轨道，窗口、托盘、EXE、安装包和界面 favicon 共用同一套图稿。原图及生成提示词位于 `desktop/artwork/`，运行 `python scripts/generate-app-icon.py` 可重新导出 16 至 256 像素的 9 种 ICO 尺寸。
 
-The dashboard monitors two independent API paths:
+手动启动显示标准桌面窗口，支持任务栏 / Alt+Tab、边缘缩放、最大化、最小化及位置尺寸保存。关闭窗口收起到托盘并继续采集，菜单“退出”结束应用及自有数据服务。`Alt+A` 唤出窗口，`Ctrl+R` 重新加载，`Ctrl++` / `Ctrl+-` 调整显示比例；按 `Alt` 显示菜单，可设置置顶及开机启动。免安装单文件版本不提供开机启动，因为它每次会展开到临时目录。
 
-- **DeepSeek API** — native requests to `https://api.deepseek.com/`. Request
-  data comes from CC Switch's `proxy_request_logs` session sync, and account
-  balance comes from `GET https://api.deepseek.com/user/balance`, which
-  reports the real account currency (CNY for a Chinese account).
+原模型总览、活动图、请求流水、来源覆盖、命名规则、深浅主题和 CSV 导出均共用原前端。Cursor 继续标明会话请求轮次，未知 Token 不补零。下载会调用系统文件保存对话框。
 
-### Only native api.deepseek.com traffic
+主进程每 15 秒驱动后台采集；关闭窗口留在托盘后仍继续。暂停状态与历史账本持久保存，退出后重新打开会补读仍存在的原始日志。端口自动选择，常用端口占用不会导致应用打不开。
 
-CC Switch stores Codex session logs as `codex_session` rows that keep the model
-but **not** the upstream, so `model LIKE '%deepseek%'` alone mixes three very
-different paths: DeepSeek's own API, the Codex Router forwarding to DeepSeek,
-and the Codex Router forwarding to Command Code. `/deepseek` keeps only the
-first, and `src/lib/codex/session-upstream.ts` decides which is which:
+Windows 安装包尚未使用商业代码签名证书，系统可能提示未知发布者。安装包包含运行依赖，不包含本机历史、配置密钥或环境文件。安装到另一台电脑后，会读取那台电脑自身保留的工具记录；不会自动复制当前电脑的历史。
 
-1. Every Codex rollout file opens with a `session_meta` record naming its
-   `model_provider`; `~/.codex/config.toml` maps that name to a base URL, and a
-   `deepseek.com` host means native.
-2. Sessions on the `codex-router` provider are otherwise ambiguous, so each row
-   is matched against the router's own `~/.codex/codex-router/usage-events.jsonl`
-   by model, output token count and a ±3 s window. That log names the provider
-   the router finally used — `deepseek` (native) or `commandcode`. A session
-   drives one provider profile, so it is classified as a whole: the strongest
-   row match wins, and a session with no exact match falls back to the provider
-   the router used for the same models around the session's own time span.
+再次启动会自动扫描仍然存在的原始日志，补读退出期间的请求，并按稳定 ID 去重。**已采集的原始观测保存在 `~/.model-observatory/history.sqlite`**，源文件清理或暂时无法读取不会删除已入账历史；更新同一请求的用量会修订原记录。SQLite 事务和 WAL 保护写入，命名规则与跨来源匹配仍在查询时统一应用。暂停状态重启后保留，需要主动恢复。
 
-The split is auditable from `GET /api/metrics?source=deepseek`, whose `upstream`
-field carries the same breakdown the page used to draw. (There was a banner on the page;
-it was removed because its numbers were computed over all time and did not follow the
-1d/7d/30d range switcher, so on a 1-day view it contradicted the page it sat on.) Of the
-current 2,835 DeepSeek-model rows:
+补读的前提是工具在托盘退出期间仍然记录并保留日志。关闭托盘期间，统一事件 HTTP 接口若无独立服务会不可达，调用方需保存并重试；未落日志的封闭客户端调用无法事后还原。不要将这个能力理解为全机流量拦截。
 
-| Upstream | Rows | Counted |
+窗口设置位于 `%APPDATA%/Model Observatory/window.json`，日志位于同目录的 `logs/desktop.log`。可在 Windows 设置中卸载安装版，统计历史目录不会随卸载删除。`install-desktop.ps1` 安装或升级当前版本，0.2.1 起支持用 `ModelObservatory.exe --quit` 正常退出后升级。旧 C# / WinForms / WebView2 实现、配套构建与测试、旧截图和参考目录均已移除，只维护当前桌面发行链路。
+
+## 页面
+
+- `/`：模型总览、时间范围、请求 / Token 活动、跨工具分布、模型名称搜索与排序。展开模型可核对原始名称和来源，并钻取请求。
+- `/requests`：逐请求流水、模型 / 工具 / 关键词筛选、50 条分页、原始证据和 CSV 导出。CSV 导出全部筛选结果，不局限于当前页。
+- `/tools`：来源覆盖、原始观测与合并数量、待核对证据、可添加和删除的模型命名规则、统计口径。
+- `/models`：重定向到模型总览。
+
+默认按北京时间的今天统计；也支持最近 24 小时、7 天、30 天和全部。每次界面请求完成 5 秒后再次刷新，避免请求重叠；窗口隐藏或最小化时停止界面轮询，显示后恢复。主进程继续每 15 秒采集。暂停自动刷新仍允许手动刷新或切换筛选。刷新失败会保留上次读数并明确提示。已有历史会先显示，原始日志在后台补读，状态显示“正在补读”；没有历史时等待首次采集。更新时间使用实际入库时间。
+
+## 运行与构建边界
+
+`src/server/http.ts` 只使用 Node 内置模块提供静态文件与原有数据接口，文件按流读取，请求体在接收时按接口限额限制。`scripts/prepare-desktop.mjs` 将数据服务打包成一个约 60 KiB 的 CommonJS 文件，并复制静态 UI。Next、React 构建工具和 esbuild 都属于开发依赖，不作为服务依赖带入安装包。Electron 内的 React 客户端仍保留原有交互。
+
+Windows 静态导出的分段预取文件会在构建时统一为客户端要求的名称；自动验收会检查导航和资源没有 404。`/models` 由轻量服务重定向到首页，无需额外页面实现。
+
+## 活跃数据链路
+
+```text
+原始本地记录 / 统一事件
+  -> readers.ts：来源适配和 Token 定义
+  -> jsonl.ts：只提交完整 JSON 行，增量读取
+  -> archive.ts：事务保存原始观测和暂停状态，保留历史
+  -> ledger.ts：请求归一、一对一匹配、具体模型汇总
+  -> src/server/：本机 HTTP、范围、流水筛选、分页、CSV
+  -> Electron 桌面窗口中的 React 界面
+```
+
+`src/lib/observatory/` 是唯一统计核心。SQLite 读取缓存在本进程复用，并通过 `data_version` 感知其他进程写入；未变化的观测跳过重复 SQL。原始记录在增量读取、归档和查询间共享不可变对象，修订使用新对象；不再长期保留每条记录的 JSON 字符串副本。本进程入库后直接更新内存账本，不重新读取解析整库；启动或其他连接写入后再通过 SQLite 迭代器加载。归一、去重及排序结果在记录或命名规则变化时更新，时间范围仍按当前时间筛选。查询结果会一直复用，直到账本、覆盖、命名规则或时间窗口里的记录集合发生变化，而不是每秒重建一次。界面按当前视图取数：总览只要最近 5 条，流水按 50 条分页，接入页不重复拉取流水；导出仍包含全部筛选结果。JSONL 在成功入库后释放已解析行，保留文件游标和解析状态，之后只读新增字节；文件被替换或变短后从头读取。DSH 按帧或行增量读取，工具输出等无关长行在确认类型后即丢弃，不再把整个会话文件放进内存。SQLite 使用有限页缓存且不把账本文件映射进进程。DSH 解码位于 `sources/dsh.ts`，文件遍历位于 `files.ts`，Grok 直接使用同一套增量 JSONL 读取。旧 `metrics/`、`collectors/`、CC Switch 导入、账户额度、旧仪表盘及未使用的组件库已经移除。
+
+查询和导出统一使用 `/api/observatory`，数据接入和命名规则分别使用其 `/events`、`/aliases` 子路径；`/api/health` 供桌面进程探测。已删除旧 `/api/metrics`、`/api/sources`、`/api/command-code`，旧地址现在返回 404。
+
+应用界面使用黑白灰配色，浅色白底黑字、深色黑底白字。模型与工具以名称区分，采集状态同时使用图标和文字；选中、悬停、焦点与错误提示均保留可读标记。样式使用原生 CSS，不依赖 Tailwind、shadcn 或图表组件库。
+
+## 原始采集来源
+
+| 来源 | 本地证据 | 主要边界 |
 | --- | --- | --- |
-| Codex session configured for `https://api.deepseek.com/` | 899 | yes |
-| Codex Router, forwarded to DeepSeek | 494 | yes |
-| Codex Router, forwarded to Command Code | 316 | no |
-| `api.apikey.fun` and other hosts | 1,123 | no |
-| Codex session missing from `~/.codex/sessions` | 3 | no |
-
-### DeepSeek spend is an estimate
-
-The official DeepSeek API has **no** usage or cost endpoint — only
-`/user/balance`. Probing `/user/usage`, `/user/billing`,
-`/dashboard/billing/usage`, `/v1/dashboard/billing/subscription` and similar
-paths all return 404, and third-party trackers report the same. The `Spent` rows
-in the `Balance and spend` table on `/deepseek` are therefore computed here from
-the token counts in CC Switch's `proxy_request_logs`, priced with DeepSeek's
-**official CNY price list** instead of CC Switch's USD estimate:
-
-- `src/lib/deepseek/cny-pricing.ts` holds the table copied from
-  [api-docs.deepseek.com](https://api-docs.deepseek.com/zh-cn/quick_start/pricing)
-- cached and uncached input are separated (`miss = inputTokens − cacheReadTokens`)
-  because DeepSeek charges them at very different rates
-- peak hours (北京时间周一至周五 09:00–12:00 与 14:00–18:00) bill at the peak rate,
-  everything else at the off-peak rate, which is exactly half
-- unknown model names fall back to Flash prices
-
-The rows are labelled `(est.)` and link to the price list, because they remain
-an estimate — DeepSeek bills the account directly and this dashboard never sees
-the invoice.
-
-### DeepSeek Harness traffic
-
-Requests the harness itself makes never reach Codex, so neither CC Switch nor
-the router sees them. DSH does record them though: every session log in
-`~/.dsh/sessions/<project>/<session>/session*.jsonl` carries the provider, the
-model and the token usage on each `assistant/message` record.
-`src/lib/dsh/session-usage.ts` reads those logs — Zstandard frame by frame,
-following DSH's own container format — and feeds two places:
-
-- `/deepseek` **merges** the turns served by `deepseek-official` into the same
-  metrics as the CC Switch rows, so that page is the whole machine's native
-  `api.deepseek.com` traffic. The harness never goes through the Codex Router,
-  so the two halves never describe the same request and nothing is double
-  counted. Both halves are labelled `DeepSeek` in the API column, so a model used
-  through both the CLI and the harness shows as **one row** rather than two.
-- the **DeepSeek Harness** tab on `/`, `/requests` and `/models` (source id
-  `harness`) lists every upstream the harness used, because the other tabs cannot
-  show harness traffic at all.
-
-### One name per upstream
-
-The readers spell the same upstream differently — the router writes `commandcode`,
-DSH writes `command-code`, CC Switch rows are labelled by whichever page read them.
-That was not cosmetic: models are grouped by `provider::model`, so two spellings of
-one upstream produced two rows for one model on one upstream. `deepseek-flash` was
-listed twice — 188 rows from the Codex log and 139 harness turns, both native
-`api.deepseek.com` — and never merged.
-
-`src/lib/metrics/provider.ts` is now the one place that decides what an upstream is
-called:
-
-| Written by the readers | Shown as |
-| --- | --- |
-| `deepseek`, `deepseek-official`, `DeepSeek API`, `DeepSeek API · Harness` | `DeepSeek` |
-| `commandcode`, `command-code` | `Command Code` |
-| anything else | its own name, unchanged |
-
-Names that are not aliases are **not** folded into an "other" bucket: a bucket hides
-which upstream it was, and recognition is the point. So `b-ai`, `opencode-go` and
-`openai` keep their names.
-
-The router names a model as `<upstream>/<model>` — `deepseek/deepseek-v4-flash` — while
-the same model reached directly is recorded without any prefix. Two spellings of one model
-on one upstream produced two rows that displayed identically and never added up: 655
-`deepseek/deepseek-v4.1-flash-expires-on-0910` requests sat beside 706 of the same model
-from a session that called `api.deepseek.com` directly. A prefix equal to the row's own
-provider is now stripped, which is exactly the namespacing the router added; it merges no
-two different model ids (checked against the live log).
-
-One case is deliberately **not** merged. Under Command Code the router catalog holds both
-`deepseek/deepseek-v4.1-flash` and `deepseek-v4.1-flash` as distinct model ids, and they
-display identically. Merging them would be a guess about the upstream's catalog rather
-than a fact read from it, so they stay apart.
-
-A provider that is not declared under `[model_providers]` is resolved through the root
-keys instead — `openai_base_url`, then `base_url` — because that is how Codex redirects its
-built-in providers, and the router relies on exactly that.
-
-`custom` is deliberately absent from the table, because the name means two different
-things: the Codex provider called `custom` points at `api.apikey.fun` while the
-router's `custom` is a routing target with no host evidence. A name-keyed table cannot
-tell those apart, so a Codex row is named by **its session** instead — sessions on
-`api.deepseek.com` are `DeepSeek`, sessions that went through the router are already
-counted by the router log, and the rest are named by the host their provider points at,
-read from this machine's `~/.codex/config.toml`. A row whose rollout file is gone is
-labelled `unknown` rather than guessed at — currently three rows.
-
-The **routed** rows now name where they went rather than the client that sent them.
-Labelling them all `Codex Router` is what previously hid the fact that most of them
-went to Command Code.
-
-DSH reports `inputTokens` as the *uncached* prompt and lists the cached part
-separately, unlike CC Switch where the input count already contains it; the
-reader normalises both into "total prompt + output".
-
-#### Live updates
-
-The harness data is as live as the rest of the dashboard. DSH appends each finished turn
-to its session log immediately (a measured read found the newest usage record
-0 s old), the page re-renders every 5 s, and the reader keeps up because it
-re-reads almost nothing:
-
-- a file whose size and mtime are unchanged is answered from cache without
-  touching the disk, so a poll only reads the session currently being written
-  instead of all ~30 MB of history
-- a growing file decodes only the Zstandard frames appended since the last read
-- the file list is re-scanned at most every 4 s, so a newly started session or a
-  subagent session appears on its own
-
-Measured end to end: the newest event is about 3 s old when `/api/metrics`
-answers, and the counter advances while the harness is mid-turn. A request that
-took ~1,070 ms before this caching took ~110 ms after it.
-
-Real per-month cost is only available from DeepSeek's private dashboard
-endpoints, which need a `platform.deepseek.com` **browser session token**
-rather than an API key:
-
-- `GET https://platform.deepseek.com/api/v0/usage/cost?month=<m>&year=<y>`
-- `GET https://platform.deepseek.com/api/v0/usage/amount?month=<m>&year=<y>`
-
-They are undocumented, can change without notice, and are not wired in yet.
-- **Codex Router API** — requests routed through
-  `http://127.0.0.1:4202/v1`, read from
-  `~/.codex/codex-router/usage-events.jsonl`.
-
-The active source is detected from the current CC Switch Codex profile
-(`deepseek-direct-local` → DeepSeek API, `codex-router-local` → Codex Router
-API). You can switch sources manually on `/`, `/requests` and `/models` —
-including **DeepSeek Harness**, the third tab, which is not profile-backed: it
-reads `~/.dsh/sessions` and lists every turn the harness itself sent upstream,
-with `provider` as the API column, under the same names as everywhere else.
-Because it is session data it also becomes visible immediately — the log
-updates while a turn is still running.
-
-All dashboard data refreshes every 5 seconds. The DeepSeek balance endpoint is
-cached for 30 seconds to avoid calling the official API too frequently. The DeepSeek tab
-is the slowest (`/api/metrics?source=deepseek` takes 1.8–2.9 s) because it classifies
-every Codex session by reading its rollout file; All pays that same cost plus two cheap
-reads, so it is the slowest view.
-
-### The All tab
-
-`All` answers "what has this machine actually been doing", which no per-upstream tab can:
-each of them is scoped to one data path and therefore cannot show the others.
-
-**It is a union, not a sum.** The three tabs overlap, so adding them together counts
-roughly a thousand rows twice:
-
-- every harness turn sent to `api.deepseek.com` appears on both `/harness` and
-  `/deepseek`, because the DeepSeek page deliberately merges the harness's native turns
-  into itself;
-- everything the Codex Router forwarded appears on both `/router` and `/deepseek`.
-
-So All splits ownership **by reader**, which makes the three parts disjoint:
-
-| Owner | Holds | Why |
-| --- | --- | --- |
-| router log | everything through the router | it saw the request and knows the final upstream, which is what the API column shows |
-| harness log | every DSH turn | DSH talks to upstreams directly, so nothing else sees it |
-| CC Switch | Codex rows the router never saw | includes the non-DeepSeek models no tab can show |
-
-**A provider id does not tell you where a request went.** The codex-router deliberately
-keeps Codex's built-in `openai` provider id and points `openai_base_url` at its own
-loopback, so a session can read `model_provider = "openai"` and still have been served by
-the router. Deciding ownership by the provider *name* therefore missed ~1,660 rows and
-counted them twice — once from the router log, once from CC Switch. Ownership is decided
-by where the provider actually points, and a session can only count as router traffic if
-its rows fall after the router log begins.
-
-The overlap is real and measurable: with 7 days of data the tabs sum to ~7,500 while All
-reports ~6,600, and `npm run test:e2e` asserts `max(tabs) < all < sum(tabs)` in **both**
-the 7-day and all-time windows. The all-time window is the one that matters here: the
-redirected sessions ran before the 7-day window, so only the all-time view notices if they
-stop being de-duplicated. `allScope.dedupedViaRouter` is the count being dropped.
-
-**What it adds.** CC Switch holds Codex rows whose model is not a DeepSeek one —
-`glm-5.3-flash`, `gpt-5.6-luna`, `qwen3.8-flash` and friends. Each per-upstream tab
-filters them out, so they were invisible; All shows them.
-
-**What it does not report, and why:**
-
-- **cost** — DeepSeek's CNY list prices only cover DeepSeek models, the CC Switch USD
-  figure is near zero (the account is billed in CNY), and the router logs no cost at all.
-  Adding those gives a number without a meaning, so the field stays absent.
-- **first token** — only the router log records it.
-- **latency** — reported, but it averages three different measurements (CC Switch's
-  `latency_ms`, the router's `durationMs`, DSH's whole-turn duration), so it is an average
-  over rows that reported *something* rather than a comparable figure.
-
-Every row whose Codex rollout is gone cannot have its route determined at all. Those are
-counted and labelled rather than guessed at or dropped — currently three rows.
-
-The Coverage card on Overview states the split, so the number is auditable.
-
-### JSON API
-
-- `GET /api/sources` — active source, CC Switch profile, and capability matrix
-- `GET /api/metrics?source=deepseek|router|harness&days=7&limit=400` — unified metrics
-- `GET /api/command-code` — Command Code account, usage, credits and limits
-- `GET /api/health` — application identity marker, used by the tray to tell our
-dashboard apart from anything else that happens to hold the port
-
-`source=harness` is the same snapshot shape as the other two sources, built from
-the session logs; its records carry no status code (the log has none) and a
-`durationMs` measured from the turn's `step/start`.
-
-`/api/metrics` also carries `dsh` (DeepSeek Harness usage per upstream
-provider) and, for the DeepSeek source, `upstream` (how many requests were kept
-and which were excluded).
-
-The DeepSeek API key is read server-side from `DEEPSEEK_API_KEY` first, then
-from `~/.codex/codex-router/deepseek-api-key.secret`. The key is never returned
-by any endpoint.
-
-## Command Code
-
-`/command-code` tracks the [Command Code](https://commandcode.ai) account that
-backs the `commandcode` provider. Four endpoints on
-`https://api.commandcode.ai` are combined into one report:
-
-| Endpoint | Data |
-| --- | --- |
-| `/alpha/whoami` | account name, username, email, user id |
-| `/alpha/usage/summary` | requests, success rate, tokens, credits spent |
-| `/alpha/billing/credits` | remaining credits plus the pacing windows |
-| `/alpha/billing/subscriptions` | plan, status and billing cycle |
-
-### Limit windows
-
-Command Code paces billing with three windows, all shown as progress bars with
-their reset countdown:
-
-- **5-hour window** — rolling `windowLimits.fiveHour` (`used` / `cap` credits)
-- **Weekly limit** — rolling `windowLimits.weekly`
-- **Monthly limit** — the current billing cycle: spent credits from
-  `usage/summary` over `spent + credits.monthlyCredits`, resetting at
-  `subscriptions.currentPeriodEnd`
-
-Bars are green below 60%, amber from 60% and red from 85%. When
-`windowLimits.limited` is `false` the page shows **unlimited** — extra credits
-are never paced. A compact version of the same card is rendered on **Overview**
-only; the DeepSeek and Models pages stay scoped to their own provider.
-
-### Credential
-
-The API key is resolved server-side, in order:
-
-1. `COMMAND_CODE_API_KEY`, then `COMMANDCODE_API_KEY` in the environment
-2. `~/.dsh/.credentials.yaml` (`refs.COMMAND_CODE_API_KEY`)
-3. `~/.config/commandcode/credentials.yaml`, `~/.config/commandcode/config.json`,
-   `~/.commandcode/credentials.json`
-
-Only a masked preview (`user_XXXX...XXXX`) and the source path are ever
-returned. The report is cached in-process for 30 seconds (120 seconds after a
-failure); `GET /api/command-code?fresh=1` bypasses the cache and is what the
-**JSON** buttons on the page link to.
-
-## System tray app
-
-`tray/` holds a native WinForms host (`RouterMonitorTray.exe`) that lives in the
-notification area and opens the dashboard in a **WebView2** flyout pointed at
-`http://127.0.0.1:3000`.
-
-**The flyout is the web app.** It does not imitate the dashboard, it renders it:
-there is no drawing code in `tray/` at all. The panel is a borderless window whose
-only child is a WebView2 control showing the same URL a browser would show, so the
-two surfaces cannot drift apart. Everything that used to be reproduced by hand —
-the design tokens, the card geometry, the table layout, the Geist faces and their
-kerning, the lucide icon paths, the Cmd-K dialog — is now simply the page.
-
-### What that replaced
-
-The previous tray was a GDI+ re-implementation of the whole front end: 19 C#
-files and 9,824 lines, including a 79 KB base64 kerning table, four embedded Geist
-faces, hand-copied lucide icon paths and a table auto-layout algorithm, all held in
-place by a pixel-diff tool that scored the panel against browser screenshots.
-
-|  | Hand-drawn (before) | WebView2 (now) |
-| --- | --- | --- |
-| `tray/*.cs` | 9,824 lines / 19 files | **1,592 lines / 3 files** at the port; 4,648 / 11 now — see "Where the extra lines went" |
-| Compiler | `csc.exe` (.NET Framework) | `csc.exe` — unchanged |
-| Executable | 530 KB | 55 KB (+ WebView2 DLLs) |
-| Fidelity | hand-matched, pixel by pixel | identical by construction |
-| When the web UI changes | re-measure and re-sync by hand | nothing to do |
-
-Across the whole change: **11,201 lines deleted, 547 added.**
-
-#### The flyout is four files, and the controller is owned
-
-`PanelForm` was one 1,454 line class holding window chrome, DPI arithmetic, the
-WebView lifecycle and the page protocol at once. It is four partial files by
-responsibility, so a new tray capability is a region in the right file rather than a
-search through one class:
-
-| File | Lines | Holds |
-| --- | --- | --- |
-| `PanelForm.cs` | 615 | window chrome, dragging, placement, layout |
-| `PanelForm.WebView.cs` | 531 | the WebView lifecycle |
-| `PanelForm.Bridge.cs` | 299 | the page/tray protocol and navigation guards |
-| `PanelForm.Scaling.cs` | 294 | display scale, drawn size, ZoomFactor |
-
-The split moved members **verbatim** and asserted that each of the 113 members landed
-in exactly one file; the executable came out the same size because no code changed in
-the move.
-
-**The controller is owned, not reflected into.** WebView2's WinForms `WebView2`
-control keeps its controller in the private field `_coreWebView2Controller` and never
-exposes it. Chromium only accepts a suspend while the controller reports itself
-invisible, so the old code reached into that field by reflection — a private
-implementation detail that would have failed silently inside `catch {}` if the SDK
-ever renamed it. The tray now calls
-`CoreWebView2Environment.CreateCoreWebView2ControllerAsync` against a host window it
-owns and uses `IsVisible`, `Bounds`, `ZoomFactor` and `RasterizationScale`, all
-public. `BoundsMode` is pinned to `UseRawPixels` so `Bounds` means what the scaling
-arithmetic assumes.
-
-Two behaviours turned out to depend on the control that was removed. Both showed up as
-the panel hiding itself about 700 ms after opening, and both were found by logging
-rather than guessing:
-
-- the WinForms control was a **focusable** control. A plain `Panel` is not, so
-  focusing it did nothing, the form never became the active window, and it deactivated
-  — hiding itself — as soon as the process that asked for it exited. The host is now a
-  small `WebHost : Panel` with `ControlStyles.Selectable`;
-- the control hid its child window on suspend as well as flipping `IsVisible`.
-  Flipping `IsVisible` alone left Chromium compositing: `suspend hidden: suspended`
-  was still reported, but hidden CPU went from **0 to 172 ms** per 0.5 s sample. The
-  host is hidden too, and the gate is back to 0.
-
-**Display scale is read per open, and read correctly.** `dpiScale` used to be read
-once in the constructor via `Graphics.FromHwnd(IntPtr.Zero)`, which reports the
-*primary* monitor's DPI — the wrong answer on a mixed-DPI desktop — while
-`PositionNearTray` placed the window on the monitor under the pointer. The two
-disagreed about which screen this was. It now asks `GetDpiForMonitor` for the monitor
-under the pointer, re-reads it whenever the panel opens, and recomputes the drawn size
-if it changed.
-
-**Measured, not assumed.** This machine has one display, so the mixed-DPI path could
-not be exercised: the per-monitor reading is verified to give the same answer as before
-(DPR 1.275, viewport 1689x936), and the behaviour on a second monitor at a different
-scale is **untested**. Dragging the panel between monitors of different scale, or
-changing the display scale while the tray runs, remains a known boundary.
-
-`DragStripHeight` is in physical pixels and is deliberately **not** multiplied by the
-scale, so the grip strip stays a constant size on screen rather than growing with the
-content; every other measurement in the scaling file is scaled. That inconsistency is
-intentional and is named in the source.
-
-#### Where the extra lines went
-
-The port left the tray at 1,592 lines in three files, all of it window chrome and
-WebView plumbing. It is **4,648 lines in eleven files** now. **This is more, and the
-target was less.** The objective asked for `tray/` to fit in 1,976 lines; it does not.
-The honest breakdown:
-
-| File | Lines |
-| --- | --- |
-| `Program.cs` (was 1,805) | 1,525 |
-| `PanelForm.cs` — chrome, layout | 615 |
-| `PanelForm.WebView.cs` — WebView lifecycle | 531 |
-| `ControlChannel.cs` | 373 |
-| `ServerHost.cs` | 370 |
-| `PanelForm.Bridge.cs` — protocol, guards | 299 |
-| `Diagnostics.cs` | 295 |
-| `PanelForm.Scaling.cs` — DPI, zoom | 294 |
-| `Settings.cs` | 184 |
-| `ProcessSampler.cs` | 141 |
-| `AssemblyInfo.cs` | 21 |
-
-What did *not* grow is the diagnostic shell. `CliContext` — 460 lines of headless
-driver that shipped inside the executable and duplicated probe/shot/cycle — is **gone
-entirely**; `Program.cs` is 1,525 lines *while gaining* every forwarding path above,
-having once been 1,805. There is no diagnostic code outside `Diagnostics.cs`, and no
-`--mode` to add when a capability arrives: it is one row in
-`RegisterControlHandlers()`, demonstrated above.
-
-So where did the rest come from? Capability that did not exist — a control channel
-(373), persisted settings (184), process sampling (141), the measurements themselves
-(295) — plus ~400 lines of comments explaining decisions that had been silent. Roughly
-1,000 lines of the 4,648 are the channel and the diagnostics. Whether that is worth it
-is a judgement call, and this is not a claim that the tray got smaller. What did get
-smaller is the cost of the next change: a new capability is one table row, and
-verification is a command that fails rather than a report somebody has to interpret.
-
-### Viewport and size
-
-The page is laid out at exactly **1688x935 CSS pixels** — the size the reference
-screenshots were taken at — so the flyout never falls into the app's responsive
-layout. That is achieved by pairing the window size with `ZoomFactor`; the two move
-together so the CSS viewport is constant while the drawn size is not.
-
-The drawn size is **85% of the browser's own** (`UserScale` in `PanelForm.cs`; a
-single constant, so it is one number to change). At 150% display scaling that means
-`ZoomFactor = 0.85` and a window of **2152x1212**, whose page still reports
-`innerWidth x innerHeight = 1688x935`. At 1.0 the window would be 2532x1402 — on a
-2560x1600 panel that is 99% of the width and 88% of the height, i.e. effectively full
-screen, which is what the original brief produced and what made the panel feel wrong
-to use. 70% was tried first and read as too small, hence 85%.
-
-If even the reduced size would not fit the work area, the window and `ZoomFactor`
-are lowered together again; the **layout never changes**, only the drawn size.
-
-### Moving the window
-
-The panel is freely draggable. It has no title bar (`WS_CAPTION` is masked off, so
-the window cannot expose one), so a **grip strip** 20 physical pixels tall sits above
-the page and carries the three-bar hint; the page is placed *below* the strip so the
-strip covers no content. Dragging it runs Windows' own move loop — the strip issues
-`WM_NCLBUTTONDOWN` with `HTCAPTION` after releasing capture.
-
-Two things had to give way for this, both of which were inherited from the hand-drawn
-panel and were what actually blocked dragging:
-
-- the `WM_WINDOWPOSCHANGING` / `WM_MOVING` handler used to snap the window back to
-  its anchor on every reposition, so any move was undone immediately;
-- `WM_SYSCOMMAND` with `SC_MOVE` was swallowed. That is the message a caption drag
-  sends, so the move loop started and then died. `SC_SIZE` is still blocked.
-
-The anchor is now only the *initial* placement. Once the window has been moved by
-hand it keeps that position — across restarts, because the drag writes it to
-`settings.json` — and `KeepOnScreen` pulls it back into view if it is ever dragged
-off the desktop: the panel has no taskbar entry, so an off-screen window would
-otherwise be unrecoverable. **重置窗口位置** in the tray menu forgets the position
-and docks the panel back to the tray.
-
-### Settings
-
-Everything that was a compile-time constant and turned out to be a preference
-lives in `%LOCALAPPDATA%\RouterMonitorTray\settings.json`:
-
-| Field | Default | What it is |
-| --- | --- | --- |
-| `userScale` | `0.85` | drawn size as a fraction of the browser's own; the CSS viewport never changes |
-| `dragStripHeight` | `20` | height of the grip strip above the page, in physical pixels |
-| `stayOpen` | `false` | whether the flyout survives losing focus (固定面板) |
-| `topMost` | `true` | always-on-top (窗口置顶) |
-| `hasPosition`, `windowX`, `windowY` | unset | where the panel was last dragged to |
-| `port` | `3000` | the port the local dashboard answers on |
-| `hotkey` | `Alt+A` | global hotkey that summons the panel; empty disables it |
-
-The tray menu changes the first four live — **固定面板**, **窗口置顶**, **面板大小**
-(70% / 85% / 100%) and **重置窗口位置** — and each writes the file immediately.
-`userScale` and `dragStripHeight` can also be changed over the channel, which is
-the same code path the menu uses, so a click and a script cannot drift:
+| Cursor | `%APPDATA%/Cursor/User/globalStorage/state.vscdb` 的请求元数据 | 按 requestId 合并分叉副本；只计有响应的会话请求轮次，不能代表内部逐步模型调用。模型取自当轮配置，Token 保持未知；不读取对话和认证字段 |
+| Codex CLI / Desktop | `~/.codex/sessions` 和 `archived_sessions` 的 token_count | 跳过重复累计快照；模型取自当次 turn_context，未确认响应模型时标记 configured |
+| Codex Router | `~/.codex/codex-router/usage-events.jsonl` | 优先 responseModel，否则使用日志 model；不猜测未识别的调用工具 |
+| DeepSeek Harness | `~/.dsh/sessions` 的原始压缩 usage | 复用文件格式解码，不采用 CC Switch 导入 |
+| pi | `~/.pi/agent/sessions` | 按原始 message id 计数，输入包含 cacheRead/cacheWrite |
+| ZCode | `~/.zcode/cli/db/db.sqlite` 的 model_usage | 每个实际 attempt 分别计数；读取 completed/error/cancelled；input_tokens 已含缓存 |
+| OpenCode | `~/.local/share/opencode/opencode.db` 的 assistant usage | 输入加缓存，输出加独立 reasoning；只提取用量元数据 |
+| Claude Code | `~/.claude/projects` 的 assistant message | 相同 message id 的流式更新只计一次；输入加缓存读写 |
+| Command Code CLI | `~/.commandcode/projects` 的原始 message usage | 读取逐请求，不把账户额度当调用次数 |
+| Grok CLI | `~/.grok/sessions` 的本地记录 | 缺少可靠调用时间与 Token，仅在全部历史计数；用量保持未知 |
+| ChatGPT 桌面端 / 网页 | 尚无逐请求 usage 接口 | 明确显示待接入；普通聊天不会自动写入 Codex/API 日志 |
+
+SQLite 的主文件和 WAL 均参与缓存失效。JSONL 只解析已完成的行，半行等待下次刷新；文件截短后重新读取。来源读取失败只影响该来源，下次采集重试。
+
+本系统是**原始记录聚合器**，不是全机网络拦截器。无法读取的工具、封闭客户端加密流量、未落日志的失败与内部调用不应被声称为已覆盖。上游隐藏模型或使用不透明别名时，不可能仅凭本地配置确认真正执行的权重。页面保留证据与未验证状态。
+
+## 计数和模型身份
+
+1. 先移除明确识别的路由 / 供应商命名空间。保留版本号、日期、fast、vision 等具体变体，不把全部 DeepSeek 或 GPT 调用折叠成一个家族。
+2. 同一来源的稳定请求 ID 重传或流式修订只记一次。同一来源的两次独立请求，即使时间与 Token 相同，也分别计数。
+3. 路由与会话的模型、输入、输出和时间同时匹配、且候选唯一时，一对一合并证据。存在多个候选的路由证据暂不加总，在接入页单列。未匹配的路由记录保留，工具身份保持未知。DSH 使用会话内序号而非整个扫描结果的位置生成稳定 ID，避免新会话改变旧请求身份；同一会话的日志副本不会再次计数。无法证明的跨来源重叠仍可能存在，不能保证所有历史记录都能自动去重。
+4. Token 输入含缓存，缓存只是输入的子集；已记录 Token = 已记录输入 + 已记录输出。缺失 Token 保持 null；无用量的模型显示“未记录”，部分覆盖显示完整用量的请求比例，不当作已知的 0。
+5. 已采集的观测持久保存到本地 SQLite。原始日志删除不影响已保存历史；尚未采集且已删除的日志无法补回。统一事件文件也单独保存。
+
+对于已核实的别名，在接入页添加规则。规则存储在 `~/.model-observatory/aliases.json`，原始名称始终保留，删除规则即可恢复。不要把无法确认的两个版本手动合并。
+
+## 为任意工具接入统一事件
+
+向 `POST /api/observatory/events` 发送 `Content-Type: application/json`：
+
+```json
+{
+  "id": "stable-upstream-request-id",
+  "at": "2026-10-14T06:00:00.000Z",
+  "model": "upstream-reported-model",
+  "client": "My Harness",
+  "upstream": "My Route",
+  "input": 1000,
+  "output": 120,
+  "cache": 600,
+  "status": "ok"
+}
+```
+
+`id` 在同一采集器 / client 内必须稳定且唯一。重传不会增加计数。`input` 已包含 `cache`，未知用量可以省略。不要发送密钥或对话正文。只需模型、时间、工具和用量。此接口不主动配置任何应用的代理，也不自动拦截流量。
+
+事件保存在 `~/.model-observatory/events.jsonl`。测试可用 `OBSERVATORY_DATA_DIR` 指向隔离临时目录。
+
+## 验证
+
+已移除独立网页启动入口。界面开发先运行 `npm run desktop:prepare`，再运行 `npm run desktop:dev`，直接在桌面窗口中预览。界面和静态资源只接受当前桌面进程的会话标识；普通浏览器访问本机界面地址返回 403。数据 API 保留给采集、导出和诊断使用。
 
 ```powershell
-dist\tray\RouterMonitorTray.exe --ctl config --arg key=userScale --arg value=1.0
+npm test
+npm run lint
+npm run desktop:build
+npm run test:ui
+npm run test:desktop
 ```
 
-`port` is read at startup (the host script is launched with `-Port`), so changing
-it needs a restart; asking the channel for it returns that as an error rather than
-pretending. A missing file is the defaults; a damaged one is the defaults plus a
-line in `logs/tray-init.log` and the bad file kept beside it as `settings.json.bad`.
-The tray never fails to start because of this file.
+单元测试同时验证轻量服务的桌面会话、静态资源、请求体限额、同源修改、分页、完整 CSV 和命名规则；并覆盖具体模型合计、版本与命名空间、别名、重复重传、一对一证据匹配、歧义隔离、缓存口径、时区、未知值、增量 JSONL 与截断恢复，以及独立进程退出、离线补读、暂停保留与源文件删除后的历史保留。界面验收直接启动打包 EXE，使用真实本地账本的隔离副本；写命名规则的 UI 测试拦截为测试响应，不改变真实规则和统计。桌面验收复制真实打包程序到带中文和空格的临时目录，在隔离用户目录且 PATH 不包含 Node 的环境中启动；验证原界面、本地字体、外部请求阻断、CSV、窗口缩放 / 最小化 / 最大化、关闭到托盘后继续采集、单实例唤回、服务和界面进程意外退出重试、无重复采集进程、隐藏时停止界面轮询、损坏设置容错、命令正常退出、端口冲突和历史持久保存。测试不修改真实历史和命名规则。
 
-### Performance
+性能复测可运行 `node tests/desktop.performance.mjs <label> <exe> <fixture>`，fixture 目录包含脱离真实用户目录的 `history.sqlite`、`events.jsonl` 和可选 `aliases.json`。报告在 `logs/performance/`，方法和限制见 `docs/desktop-evidence.md`；测试仅操作隔离副本。
 
-The host process is idle-cheap and stays warm. Before the panel is ever opened the
-tray is a single **32 MB** process with **no Chromium at all** — the WebView2 is
-created lazily on the first open. From then on it is **suspended, never destroyed**,
-and the Node server is started on demand and left running. Nothing is torn down when
-the flyout closes, so opening it again never pays a cold start.
+界面自动验收截图及报告位于 `logs/desktop-ui-acceptance/`；打包桌面验收截图与报告位于 `logs/desktop-acceptance/`。
 
-Measured by `scripts/verify-tray.ps1`, which drives the running tray and **exits
-non-zero when a threshold is missed**; each run appends a dated row with the commit
-to [`docs/tray-evidence.md`](docs/tray-evidence.md). The tray process is the one `RouterMonitorTray.exe`;
-"WebView2" counts only the Chromium processes descended from it, so other
-applications' WebView2 instances are never included.
+## 参考
 
-Every number below is produced by `verify-tray.ps1` on this machine
-(2560x1600 @ 150%, one display). The figures are the most recent row of
-[`docs/tray-evidence.md`](docs/tray-evidence.md); re-run the gate to reproduce them on
-your own machine, and compare against the commit named in that row.
+借鉴 [Langfuse Metrics API](https://langfuse.com/docs/metrics/features/metrics-api) 的模型维度聚合、时间趋势与可追溯指标；参考 [LiteLLM Spend Tracking](https://docs.litellm.ai/docs/proxy/cost_tracking) 将使用记录和调用来源作为维度。本项目的产品主轴是本机跨工具的具体模型汇总，未接入这两个云服务。
 
-| Scenario | Measured | Gate threshold |
-| --- | --- | --- |
-| Click tray icon → panel visible | same frame (a `Show()`) | — |
-| Drag the grip → window moved | follows the pointer exactly | — |
-| **Reopen after suspend** (script round-trip into the resumed renderer) | **13–24 ms** | `-MaxReopenMs` 200 |
-| **Route change** (click a sidebar link → route changed) | **20–34 ms** | `-MaxRouteChangeMs` 500 |
-| Rendering viewport / DPR | 1689x936 CSS px at DPR 1.275 | ±1 px of 1688x935 |
-| Hidden CPU | **0 ms per 0.5 s sample** (median of 30) | `-MaxHiddenCpuMs` 20 |
-| Visible CPU | 0–450 ms per 0.5 s sample | — |
-| Tray process, panel never opened | 32 MB, zero Chromium processes | — |
-| Tray process, panel open | 53–63 MB | — |
-| WebView2 while hidden | ~27 MB resident / ~220 MB committed | — |
-| WebView2 while visible | 419–449 MB resident / 368–489 MB committed | — |
+### Cursor 本地采集
 
-The viewport is **1689x936 rather than exactly 1688x935** because the window is sized
-in whole physical pixels and the viewport is that divided by the device pixel ratio.
-The gate allows ±1 px and records the measured value instead of rounding it away.
+Cursor 保留的每个会话请求 ID 计一条，思考、工具步骤及分叉副本不会重复计数。总览、流水证据和 CSV 明确标注会话轮次；它与其他来源的逐模型调用证据粒度不同，合计不是完整底层调用数。不会拿当前会话的最新模型倒填旧请求，也不会把默认 `tokenCount: {inputTokens: 0, outputTokens: 0}` 当成真实零用量。
 
-**The reopen and interaction numbers are the ones that matter**, and they are the
-reason this design took the shape it did: the tray adds nothing to the path, so
-clicking a filter, paging the log or switching a page costs what it costs in a
-browser tab.
-
-One correction to an earlier version of this section. It said navigation inside the
-panel "is handled by the React app itself", i.e. client-side. It is not: the sidebar's
-nav items are plain `<a href>` (`src/components/nav-group.tsx`), not `next/link`, so
-clicking one is a full document load. Measured in Chromium at 1688x935: **one document
-request, 109–117 ms**, which is well inside the budget but is a real reload rather than
-a client-side transition. `npm run test:e2e` asserts that cost so a regression shows
-up, and asserts the route change either way, so switching the sidebar to `next/link`
-later would not break the suite.
-
-**First open is the slow case, and it is not gated.** The warm reopen is 13–24 ms
-because the page is already rendered and hydrated; the *first* open of the process
-has to load and hydrate and lands around 0.9 s, or 2.6–4.2 s when the Node host also
-has to start. `verify-tray.ps1` reports `first content` but sets no threshold on it,
-so those two figures are measurements from earlier runs rather than numbers the gate
-will fail on. Gating them would need a cold-start fixture the suite does not have.
-
-While the panel is hidden the working set collapses to ~27 MB because Windows trims
-a suspended process; the ~220 MB that stays committed is exactly what makes the
-resume tens of milliseconds instead of a cold start. Chromium accepts the suspend
-(`suspend hidden: suspended`) and holds it at **zero CPU** — which the gate asserts,
-because it is the whole reason the flyout is suspended rather than destroyed.
-
-Interval-level detail, if a single number is not enough: `--cycle` prints a
-`sample` line every 0.5 s with the process count, resident and committed memory of
-our Chromium processes, the CPU delta since the previous sample, and the tray's own
-working set. The median is used rather than the mean because startup samples are not
-representative; the gate samples for at least `-MinHiddenSamples` (10) before it will
-judge, and 30 in a default run.
-
-`/deepseek` is the slowest page to paint at any time (~2.6 s) because that route
-renders its whole report server-side; every other page is under 0.9 s.
-
-The tray does **not** kill the WebView2 or the Node server when the panel closes.
-Doing so would turn every reopen into the cold start above — that is the failure
-mode this design exists to avoid.
-
-### Building
-
-```powershell
-# one-time: pull the pinned WebView2 SDK into tray\lib
-powershell -ExecutionPolicy Bypass -File scripts\fetch-webview2.ps1
-
-powershell -ExecutionPolicy Bypass -File scripts\build-tray.ps1            # compile only
-# a running tray is stopped first: replacing a live executable is what the
-# compiler reports as a bare "access denied"
-powershell -ExecutionPolicy Bypass -File scripts\install-tray.ps1 -Start   # build, install, launch
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-tray.ps1        # undo the above
-```
-
-The build uses the .NET Framework compiler that ships with Windows, so no
-.NET SDK is needed; the only third-party references are the two WebView2 managed
-assemblies and their native loader, pinned to **1.0.4191.47** — the SDK matching
-the WebView2 Runtime that Edge ships here (152.0.4191.66). `fetch-webview2.ps1`
-downloads that exact package from NuGet rather than borrowing a copy from another
-product's install directory, whose version would not be under our control.
-
-### The local server
-
-The tray starts `scripts/start-dashboard.ps1` on demand and never waits on it: the
-script ends in `$server.WaitForExit()`, so a `WaitForExit()` here would block the UI
-thread forever with no error.
-
-**Identity, not occupancy.** A listening socket and a 2xx-5xx status code both prove
-only that *something* is on the port. `GET /api/health` answers
-`{"app":"router-monitor-dashboard","v":1,"ok":true}` and both sides check that
-marker (`ServerHost.IsServing`, `Test-DashboardHealth` in the start script). Before
-this, any unrelated program on port 3000 was taken for the dashboard: the tray
-navigated to it, and the start script exited 0 without ever starting anything.
-Now the tray reports 本地服务：端口被占用, logs which program is in the way, gives up
-after about twenty seconds instead of four minutes, and the start script refuses to
-fight over a port it does not own.
-
-**Retrying is real.** The old launcher latched a one-shot flag that only cleared if
-`Process.Start` threw, so a script that ran and *failed* left the tray waiting and
-never trying again. A launch is now gated on the script process itself: while it is
-alive a build or the server is in progress and a second launch would only duplicate
-the build, and once it has exited without the dashboard answering, opening the panel
-again starts it again.
-
-**A stopped server is recoverable.** The tray menu shows what the server is doing
-(运行中 / 未运行 / 端口被占用) and carries **重启本地服务**, which stops our server
-and starts it again. Opening the panel re-checks the server whenever the page is not
-content-ready, so killing the server out from under a running tray no longer leaves
-the flyout dead until the tray is restarted. A transition to stopped raises a
-balloon once - a tray that has quietly stopped working must not look like one that is
-fine.
-
-| Command | What it does |
-| --- | --- |
-| `powershell -File scripts\start-dashboard.ps1` | start if our dashboard is not already serving |
-| `powershell -File scripts\start-dashboard.ps1 -Restart` | stop ours and start it again |
-
-`curl http://127.0.0.1:3000/api/health` reproduces the identity check by hand.
-
-### Where things are found
-
-Nothing is pinned to `D:\dashboard` any more. Every script derives the root from its
-own location (`$PSScriptRoot\..`), and the tray derives it from the executable it is
-running as — it is built into `<root>\dist\tray\`, so a copy of the tree works from
-any path. Verified by building and running a copy at `D:\dashboard-moved`: it built,
-started, and wrote its log to *its own* `logs\`, leaving the original untouched.
-
-Node is resolved rather than hardcoded — `NODE_EXE`, then `PATH`, then the usual
-install locations — because a fixed path broke the moment Node moved, which an nvm
-upgrade does without warning. `npm.cmd` is derived from wherever `node.exe` was found.
-A missing Node now logs what was searched and what to do, instead of naming a path
-that was never going to exist.
-
-### The executable says which build it is
-
-`RouterMonitorTray.exe` used to report `0.0.0.0`, an empty description and no company,
-which is useless for a process that runs all day — there was no way to tell which
-build was on the machine. `tray/AssemblyInfo.cs` supplies the fixed attributes and
-`build-tray.ps1` generates the informational version per build:
-
-```
-FileVersion     : 1.0.0.0
-ProductVersion  : 1.0.0+9e3676e.dirty (2026-09-12 00:40)
-FileDescription : Router Monitor Tray
-ProductName     : Router Monitor
-```
-
-`git` is invoked defensively: a native command writing to stderr is a *terminating*
-error under `ErrorActionPreference = Stop`, so an exported copy of the tree with no
-`.git` could not be built at all. It now degrades to `1.0.0+unknown`.
-
-### Installing and uninstalling
-
-`install-tray.ps1` writes the desktop shortcut, drops the autostart shortcut and
-starts the app. `uninstall-tray.ps1` is its other half and did not exist:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-tray.ps1
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-tray.ps1 -KeepSettings -KeepLogs
-```
-
-It asks the running tray to quit **through the control channel** before touching
-anything, so the WebView is suspended and disposed rather than killed — killing it is
-what leaves `msedgewebview2` children holding the profile lock. It then removes the
-desktop and Startup shortcuts, any legacy scheduled task, and the per-user data
-(`settings.json`, the WebView2 profile, the logs). The repository and the build output
-are left alone, and it says so.
-
-### One place for logs
-
-The crash log lived in `%TEMP%` while everything else was in `logs\`, so "what
-happened?" meant knowing to look in two unrelated directories. Both are under
-`logs\` now — `tray-init.log` and `tray-crash.log`.
-
-Failures that used to disappear into an empty `catch {}` now leave a line: a missing
-tray icon, an autostart shortcut that could not be written (which also raises a
-balloon, because a checkbox that silently does not stick is a lie), a controller
-geometry call that was rejected, a URL the shell refused to open.
-
-### Verification
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1     # the gate
-npm run test:e2e                                                     # page only
-```
-
-`verify-tray.ps1` is a gate, not a report. It drives the tray that is **already
-running** — through the control channel — asserts every threshold, and exits non-zero
-when one is missed. Tightening a threshold is how that is checked:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\verify-tray.ps1 -MaxReopenMs 1
-echo $LASTEXITCODE   # 1
-```
-
-| Threshold | Default | What it protects |
-| --- | --- | --- |
-| `-MaxReopenMs` | 200 | warm reopen after a suspend |
-| `-MaxRouteChangeMs` | 500 | clicking a sidebar link |
-| `-MaxHiddenCpuMs` | 20 | CPU per 0.5 s sample while hidden (measured: 0) |
-| `-MinHiddenSamples` | 10 | that the hidden phase was actually sampled |
-| `-MinShotKb` | 20 | that a screenshot is a real capture, not a blank frame |
-
-It also asserts the rendered viewport, that the page is content-ready, that Chromium
-accepted the suspend, and that the browser suite passes.
-
-Two things it does deliberately. It **pins the flyout** (`stayOpen`) for the checks that
-need a live document — a flyout hides as soon as it loses activation, which is the
-documented behaviour, but a console running the gate takes focus back, so an unpinned
-panel would show and vanish and every such assertion would fail on timing rather than on
-behaviour. The previous value is restored when the run ends, including on failure. And it
-only asserts the hotkey's *dismiss* half when the tray reports the panel actually reached
-the foreground; a script cannot guarantee that, and claiming a dismissal that never had
-focus to lose would be testing the console. Each run appends a dated row
-with the commit to `docs/tray-evidence.md` — `logs/` is ignored by git, so the summary
-is the part that belongs in the repository.
-
-**The viewport is 1689x936, not 1688x935.** The layout target is 1688x935 CSS pixels,
-but at 85% the window is sized in whole physical pixels and the viewport is that
-divided by the device pixel ratio, so it lands one pixel wide. The gate allows ±1 px
-and records the measured value rather than rounding it away. At 100% (`ZoomFactor`
-1.0) it is exactly 1688x935.
-
-`npm run test:e2e` runs page-level assertions in real Chromium via the installed
-`playwright` library — the `@playwright/test` runner is not a dependency of this
-project and adding one is out of scope, so the runner is a small script with its own
-assertions. It covers route loads, that the tray-only controls are **absent** in a
-browser, sidebar navigation and its cost, the range chip, that the JSON links stay
-self-targeting, that external links stay `target="_blank"`, and that no page raises an
-uncaught error.
-
-`install-tray.ps1` writes the desktop shortcut, drops an autostart shortcut in the
-user's Startup folder (an ONLOGON scheduled task would require elevation) and
-starts the app. It also removes the web host's logon task if one exists.
-`uninstall-tray.ps1` reverses all of it — see "Installing and uninstalling" above.
-
-**The browser is never needed.** The tray starts the local server itself if it is
-not already listening and renders the page inside its own WebView2, so the flyout
-works with no browser window open and with no dashboard tab anywhere. Start the
-tray and nothing else; the server comes up behind it.
-
-If WebView2 cannot be initialised the panel says so briefly and retries, rather
-than staying dead for the rest of the session, and the underlying exception is
-appended to `logs/tray-init.log`. The most common cause is a previous instance
-that was force-killed while Chromium was alive: the orphaned `msedgewebview2`
-processes keep the profile lock until they exit on their own. `taskkill /IM
-msedgewebview2.exe` clears it, but the retry means a restart is not required.
-
-Tray behaviour:
-
-- Left-click the icon, or pick **打开面板**, to open the flyout; it hides again when
-  it loses focus, `Esc` closes it, and **固定面板** pins it open.
-- Double-click, or pick **打开网页版**, to open the full dashboard in the browser.
-- **立即刷新** reloads the page in place.
-- **固定面板**, **窗口置顶**, **面板大小** and **重置窗口位置** are preferences:
-  they are remembered in `settings.json` and take effect immediately.
-- **全局快捷键 (Alt+A)** summons the panel from any application; unticking it disables the key.
-- **开机自动启动** toggles the Startup-folder shortcut.
-- When `http://127.0.0.1:3000` is not answering, the tray starts the hidden host
-  itself by running `scripts\start-dashboard.ps1`.
-
-The data-source switcher (All / DeepSeek API / Codex Router API / DeepSeek Harness) is
-no longer in the tray menu: the real page carries it in its header, and duplicating it
-would mean two places to keep in sync.
-
-`start-dashboard.ps1` ends in `$server.WaitForExit()`, so it never returns. The
-host launches it detached and never waits on it — a `WaitForExit()` there would
-block the UI thread forever with no error. The script is safe to call repeatedly:
-it exits immediately when the port is already listening, and the host additionally
-fires it at most once per process so a long `npm run build` cannot be started twice.
-
-### Control channel
-
-The tray is driven through a named pipe, not through command line switches. The
-wire format is one JSON envelope per line - `{v, id, cmd, args}` in,
-`{v, id, ok, error, result}` back on the same connection - and the pipe is
-per-user, so two accounts on one machine cannot drive each other's tray.
-
-```powershell
-# any command, from any script, against the tray that is already running
-dist\tray\RouterMonitorTray.exe --ctl ping --report logs\verify\ping.txt
-dist\tray\RouterMonitorTray.exe --ctl show
-```
-
-`--ctl <cmd>` is the only client entry point the executable has: it sends one
-command and writes the answer, so a new capability never adds a switch.
-`ping` reports the commands the running tray knows, so the channel is
-discoverable without reading the source.
-
-| Command | What it does |
-| --- | --- |
-| `ping` | build, pid, panel/webview/suspend state, whether the server is serving, command list |
-| `show` / `hide` / `toggle` | open, close or flip the flyout |
-| `reload` | reload the page in place |
-| `probe` | viewport, DPR, page title, document size, WebView2 core, bridge state |
-| `shot` | `args.path` - save the flyout as it appears on screen; `args.page` sends the panel to a dashboard route first |
-| `eval` | `args.script` or `args.file` - run script inside the live flyout |
-| `cycle` | `args.path`, `args.page`, `args.holdMs` - the suspend/reopen measurement |
-| `hotkey` | read the global hotkey and whether it registered, or set it with `args.value` |
-| `config` | read the settings, or change one live |
-| `quit` | tear down the way the menu's Quit does |
-
-Arguments are passed with repeated `--arg name=value` pairs, so the channel
-stays generic:
-
-```powershell
-dist\tray\RouterMonitorTray.exe --ctl config
-dist\tray\RouterMonitorTray.exe --ctl config --arg key=userScale --arg value=1.0
-```
-
-Adding a command is **one row in `RegisterControlHandlers()`** in
-`tray/Program.cs` and nothing else: not `Main`, not the menu, not the command
-line, not the diagnostics. That is the point of the channel - it is where a new
-capability goes.
-
-#### Adding a capability: the demonstration
-
-The objective for this work asked for one command to be added as proof that the
-channel makes it cheap. `status` is that command.
-
-**Why the page cannot do it.** The one line in the notification-area tooltip belongs
-to the tray; a web page cannot write it. The page is also suspended whenever the
-flyout is hidden, so the tooltip is the only place a page-derived value can sit while
-nobody is looking at the panel.
-
-**What it cost.** One row in `RegisterControlHandlers()` and one method. Nothing in
-`Main`, the command line, the menu or the diagnostics learned about it — the generic
-client reaches it immediately:
-
-```powershell
-dist\tray\RouterMonitorTray.exe --ctl status --arg "text=Router Monitor — Requests"
-```
-
-The page reaches the same method through the bridge, so both transports share one
-implementation rather than two:
-
-```ts
-setStatus("Router Monitor — Requests");
-```
-
-The tray icon now reads `Router Monitor — Overview`, `— Requests`, and so on, so a
-glance at the notification area says which page the panel is on. `TrayControls`
-reports it on every route change; `WinForms` caps `NotifyIcon.Text` at 63 characters
-and throws above that, so the tray trims rather than trusting the page.
-
-Two consequences worth knowing:
-
-- **A second launch no longer dies without a word.** It asks the running tray to
-  show the panel and exits 0; with no tray running it starts one.
-- **The diagnostics prefer the tray that is already running.** `--probe` and
-  `--shot` (including their `--page` route) are forwarded over the channel
-  whenever an instance answers, because
-  standing up a second WebView2 on the same user data folder is a documented way
-  to break both of them. `--cycle` still measures itself in its own process: it
-  drives the panel through a visible/hidden/reopen sequence, and it moves onto
-  the channel as the rest of the diagnostics do.
-
-Quitting, logging off and shutting down all teardown the same way - the icon
-goes, the WebView is suspended and disposed, and the exit is recorded in
-`logs/tray-init.log` as `shutdown: <reason>`. Killing the process was what used
-to leave `msedgewebview2` children holding the profile lock.
-
-### The global hotkey
-
-**Alt+A** summons the panel from anywhere, and hides it again if it is already the
-foreground window — one key that shows and dismisses, which is what a summon key is
-expected to do.
-
-Why the tray owns this rather than the page: the key has to work while another
-application is in front *and* while the flyout is hidden, and a hidden flyout has its
-WebView suspended, so the page is not running at all. The tray is the only part of this
-that is always there.
-
-Registration happens in `OnHandleCreated`, and the panel gets its handle at startup
-(`TrayContext` calls `EnsureHandle`), so the key works before the panel has ever been
-opened. The handle can be recreated — a DPI or theme change does it — which silently
-drops a registration, so it is re-applied there too.
-
-| | |
-| --- | --- |
-| Default | `Alt+A` |
-| Change it | `--ctl hotkey --arg value=Ctrl+Shift+K` |
-| Disable it | `--ctl hotkey --arg value=` , or untick **全局快捷键** in the tray menu |
-| Check it | `--ctl hotkey` reports the combination *and* whether it registered |
-
-The grammar is deliberately small: `Ctrl` / `Alt` / `Shift` / `Win` plus letters, digits
-and `F1`–`F24`. At least one modifier is required, because a bare letter would swallow
-typing everywhere. Anything else is rejected with `invalid combination` rather than
-silently ignored.
-
-**A hotkey that failed to register looks exactly like one that works**, so the state is
-reported rather than assumed. The three real outcomes:
-
-- `registered` — working
-- `already taken by another program` — the panel is unaffected; this is a fact about the
-  machine, not a bug. `Win+1` is a good example: Windows owns it for snapping
-- `disabled` — deliberately off
-
-A failure is logged, raises one balloon, and unticks the menu item. Nothing else about
-the tray changes: a hotkey is a convenience, not a dependency. An unparseable value in
-`settings.json` falls back to `Alt+A` with a log line rather than leaving the key dead.
-
-### The page/tray bridge
-
-The flyout renders the dashboard, so the page has to know it is in a tray and be
-able to ask the tray for things a browser cannot do. A script is injected on
-document creation that installs `window.__rmBridge`, and **its presence is the
-answer to "am I in the tray"** — `src/lib/tray/bridge.ts` is the page's half, and
-`BridgeScript` in `tray/PanelForm.cs` is the tray's.
-
-Every message is a versioned envelope, `{v:1,type:...}`, so a new message is a new
-`case` on both sides rather than a new magic string.
-
-| Page → tray | Meaning |
-| --- | --- |
-| `bridge` | sent by the injected script as soon as it installs |
-| `ready` | the app has hydrated and can receive messages |
-| `close` | hide the flyout |
-| `openExternal` `{url}` | open a URL in the default browser, not in the flyout |
-| `pin` `{pinned}` | pin the flyout open, or stop pinning it |
-
-| Tray → page | Meaning |
-| --- | --- |
-| `state` `{pinned}` | what the tray currently is; sent in reply to `bridge` and `ready` |
-
-The tray ignores an unknown `type` and logs it rather than failing: a page newer
-than the tray should not be able to stop the flyout from opening. The pre-v1
-`rm:close` string still works, so a stale cached page cannot wedge the panel.
-
-Two things follow from the bridge being real:
-
-- **The page knows.** In the flyout the header grows a pin and a close button
-  (`src/components/tray-controls.tsx`); in a browser it renders nothing at all.
-  Pinning from the page updates the tray menu and `settings.json`, because both go
-  through the same handler.
-- **`Escape` still unwinds a dialog first.** The injected script keeps the capture
-  phase listener and only closes the panel when no dialog, listbox or menu is open.
-
-### Staying on the dashboard
-
-NaN
-turned off, so a navigation away from the dashboard is a one way trip. Two guards
-keep that from happening:
-
-- **`NavigationStarting`** cancels anything that is not a page of this dashboard and
-  hands it to the default browser. Same origin is deliberately *not* enough: the
-  dashboard's own `/api/` endpoints live there too, and the four **JSON** buttons on
-  `/command-code`, `/deepseek` and the source cards used to strand the panel on a
-  bare API response. `Reload` is `Navigate` to the remembered dashboard route rather
-  than `CoreWebView2.Reload()` — reloading the current URL reloaded the API response,
-  which is why that state was previously unrecoverable.
-- **`NewWindowRequested`** is handled, so `target="_blank"` links (Platform, Docs)
-  open in the default browser. Left unhandled, WebView2 gives them a popup window
-  with no chrome. Marking the event handled also stops the popup existing at all,
-  so the flyout keeps its place.
-
-A cancelled navigation still reports a failure to `NavigationCompleted`, which would
-flash the "page failed to load" label over a navigation nobody wanted; that specific
-failure is suppressed.
-
-### Diagnostics
-
-`--probe`, `--shot` and `--cycle` are thin clients. They are measurements of the
-tray's own WebView — how long it takes to resume, what its Chromium children cost —
-so they are **asked of a tray** rather than taken by a second process: standing up a
-rival WebView2 on the same user data folder is a documented way to break both of them.
-If no tray is running, one is started (fully detached, via `Win32_Process.Create`) and
-measured. A diagnostic therefore never leaves a temporary process behind, and there is
-no diagnostic code in the executable outside `Diagnostics.cs`.
-
-```powershell
-dist\tray\RouterMonitorTray.exe --probe --report logs\verify\probe.txt
-dist\tray\RouterMonitorTray.exe --shot  preview\tray\overview.png --page /
-dist\tray\RouterMonitorTray.exe --cycle preview\tray\cycle.png --report logs\verify\cycle.txt --hold 30000
-```
-
-`--probe` prints the viewport, DPR, page title, WebView2 core version, the bridge
-protocol version and the last bridge message. `--shot` opens the flyout on `--page`
-and saves it as it appears on screen. `--cycle` opens the panel, times an in-panel
-navigation, hides it for `--hold` milliseconds while sampling CPU and memory, reopens
-it and prints the warm resume latency. `--report` writes the same lines to a file.
-
-Each one is also reachable over the channel as `probe`, `shot` and `cycle`, and that
-is the path they take when a tray is already running. Anything the page itself can be
-asked is available through `--ctl eval`, which is what made the flyout behaviours in
-this section testable:
-
-```powershell
-dist\tray\RouterMonitorTray.exe --ctl eval --arg "script=location.pathname"
-```
-
-`reference/` holds the four browser screenshots the hand-drawn panel was originally
-measured against. They are kept as a record of that work; nothing reads them now.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+采集器只通过 SQLite JSON 投影读取 ID、顺序、时间、模型配置与消息类型，不提取提示词、响应正文、代码或认证字段。数据库和 WAL 的变化都会触发重读；只读失败显示读取异常，保留已采集历史。默认自动定位 Cursor 用户数据目录；自定义配置可在启动服务前设置 `CURSOR_USER_DATA_DIR`，指向包含 `User` 子目录的 Cursor 数据目录。

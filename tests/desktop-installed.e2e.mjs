@@ -1,0 +1,44 @@
+import { _electron } from "playwright";
+import assert from "node:assert/strict";
+import path from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+
+const exe = path.join(process.env.LOCALAPPDATA, "Programs", "ModelObservatory", "ModelObservatory.exe");
+const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+const app = await _electron.launch({ executablePath: exe, env, timeout: 60000 });
+try {
+	const page = await app.firstWindow();
+	const consoleErrors = []; page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
+	const pageErrors = []; page.on("pageerror", (error) => pageErrors.push(error.message));
+	page.setDefaultTimeout(30000);
+	await page.getByTestId("request-total").waitFor({ timeout: 120000 });
+	assert.equal((await fetch(new URL(page.url()).origin)).status, 403);
+	const script = await page.evaluate(() => performance.getEntriesByType("resource").find((entry) => /\/_next\/static\/.*\.js/.test(entry.name))?.name);
+	assert.ok(script);
+	assert.equal((await fetch(script)).status, 403);
+	const all = await page.evaluate(() => fetch("/api/observatory?range=all").then((r) => r.json()));
+	const cursor = await page.evaluate(() => fetch("/api/observatory?range=all&client=Cursor").then((r) => r.json()));
+	assert.ok(all.totals.requests > 0 && all.models.length > 0);
+	assert.ok(cursor.requestCount > 0 && cursor.requests.every((r) => r.client === "Cursor" && r.scope === "turn"));
+	assert.ok(cursor.requests.every((r) => r.input === null && r.output === null));
+	const csv = await page.evaluate(() => fetch("/api/observatory?range=all&client=Cursor&format=csv").then((r) => r.text()));
+	assert.equal(csv.trim().split("\r\n").length, cursor.requestCount + 1);
+	assert.match(csv, /会话请求轮次/);
+	const loaded = page.waitForResponse((response) => response.url().includes("/api/observatory?range=all") && response.status() === 200);
+	await page.getByRole("button", { name: "全部", exact: true }).click();
+	await loaded;
+	await page.waitForFunction(() => !document.querySelector(".obs-refresh-controls")?.textContent?.includes("更新中"));
+	await page.getByRole("button", { name: "暂停实时刷新", exact: true }).click();
+	await page.waitForTimeout(150);
+	await page.waitForFunction(() => !document.querySelector(".obs-refresh-controls")?.textContent?.includes("更新中"));
+	await mkdir("preview/desktop", { recursive: true });
+	await page.screenshot({ path: "preview/desktop/installed-models.png" });
+	await page.getByRole("link", { name: /接入与口径/ }).first().click();
+	await page.locator(".obs-coverage-list").waitFor();
+	await page.screenshot({ path: "preview/desktop/installed-coverage.png" });
+	const state = await app.evaluate(({ app, BrowserWindow }) => ({ version: app.getVersion(), executable: process.execPath, packaged: app.isPackaged, userData: app.getPath("userData"), hardwareAcceleration: app.isHardwareAccelerationEnabled(), openAtLogin: app.getLoginItemSettings({ path: process.execPath, args: ["--autostart"] }).openAtLogin, visible: BrowserWindow.getAllWindows()[0].isVisible() }));
+	assert.equal(state.hardwareAcceleration, false);
+	assert.deepEqual(consoleErrors, []); assert.deepEqual(pageErrors, []);
+	await writeFile("logs/desktop-installed-report.json", JSON.stringify({ ...state, consoleErrors, pageErrors, requests: all.totals.requests, models: all.models.length, cursorRequests: cursor.requestCount, cursorCoverage: all.coverage.find((s) => s.id === "cursor"), collection: all.collection, testedAt: new Date().toISOString() }, null, 2));
+	console.log(JSON.stringify({ ...state, requests: all.totals.requests, models: all.models.length, cursorRequests: cursor.requestCount, collectionPaused: all.collection.paused }));
+} finally { await app.close(); }

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/theme-provider";
 import "./globals.css";
+import "./observatory.css";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,21 +15,21 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Router Monitor",
-  description: "Local dashboard for Codex Router usage and DeepSeek API calls",
+  title: "Model Observatory · 模型总览",
+  description: "跨工具、跨路由，按具体模型汇总这台电脑上已观测的 AI 请求。",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      lang="zh-CN"
+      className={`${geistSans.variable} ${geistMono.variable}`}
       suppressHydrationWarning
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
-      <body className="min-h-full flex flex-col">
+      <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>

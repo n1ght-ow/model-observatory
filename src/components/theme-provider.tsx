@@ -12,13 +12,12 @@ type Theme = "light" | "dark";
 
 type ThemeContextValue = {
 	theme: Theme;
-	setTheme: (theme: Theme) => void;
 	toggleTheme: () => void;
 };
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
-export const THEME_STORAGE_KEY = "router-monitor-theme";
+const THEME_STORAGE_KEY = "router-monitor-theme";
 const themeListeners = new Set<() => void>();
 
 function applyTheme(theme: Theme) {
@@ -72,12 +71,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 		applyTheme(theme);
 	}, [theme]);
 
-	const setTheme = useCallback((next: Theme) => {
-		applyTheme(next);
-		window.localStorage.setItem(THEME_STORAGE_KEY, next);
-		themeListeners.forEach((listener) => listener());
-	}, []);
-
 	const toggleTheme = useCallback(() => {
 		const next: Theme = getStoredTheme() === "dark" ? "light" : "dark";
 		applyTheme(next);
@@ -86,7 +79,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 	}, []);
 
 	return (
-		<ThemeContext.Provider value={{ theme, setTheme, toggleTheme }}>
+		<ThemeContext.Provider value={{ theme, toggleTheme }}>
 			{children}
 		</ThemeContext.Provider>
 	);
