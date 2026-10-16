@@ -1,0 +1,26 @@
+import { getSnapshot } from "../lib/observatory/store";
+
+
+export async function GET(request: Request) {
+	const url = new URL(request.url);
+	const range = url.searchParams.get("range") ?? "today";
+	if (!["today", "24h", "7d", "30d", "all"].includes(range)) return Response.json({ error: "无效时间范围" }, { status: 400 });
+	try {
+		const snapshot = await getSnapshot(range);
+		const query = (url.searchParams.get("query") ?? "").toLowerCase().slice(0, 200);
+		const model = url.searchParams.get("model");
+		const client = url.searchParams.get("client");
+		const rows = model || client || query ? snapshot.requests.filter((r) => (!model || r.model === model) && (!client || r.client === client) && (!query || `${r.model} ${r.rawModel} ${r.client} ${r.upstream}`.toLowerCase().includes(query))) : snapshot.requests;
+		if (url.searchParams.get("format") === "csv") {
+			const cell = (value: unknown) => `"${String(value ?? "").replace(/^[=+@-]/, "'$&").replaceAll('"', '""')}"`;
+			const csv = [["时间", "模型", "原始模型", "工具", "路由", "输入Token含缓存", "输出Token", "缓存Token", "状态", "证据来源", "计数单位"], ...rows.map((r) => [r.at, r.model, r.rawModel, r.client, r.upstream, r.input, r.output, r.cache, r.status, r.evidence.map((e) => e.source).join(" + "), r.scope === "turn" ? "会话请求轮次" : "模型调用 / 响应"])].map((r) => r.map(cell).join(",")).join("\r\n");
+			return new Response("\uFEFF" + csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="model-requests.csv"', "Cache-Control": "no-store" } });
+		}
+		const requested = Number(url.searchParams.get("limit"));
+		const pageSize = url.searchParams.has("limit") && Number.isFinite(requested) ? Math.max(0, Math.min(50, Math.floor(requested))) : 50;
+		const page = Math.max(0, Math.floor(Number(url.searchParams.get("page")) || 0));
+		return Response.json({ ...snapshot, requests: rows.slice(page * pageSize, page * pageSize + pageSize), requestCount: rows.length, pending: snapshot.pending.slice(0, 50) }, { headers: { "Cache-Control": "no-store" } });
+	} catch {
+		return Response.json({ error: "统计暂时不可用，请重试" }, { status: 503 });
+	}
+}
