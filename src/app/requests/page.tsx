@@ -7,7 +7,7 @@ import Loading from "../loading";
 
 function Requests() {
 	const params = useSearchParams();
-	return <Observatory key={params.toString()} view="requests" initialModel={params.get("model") ?? ""} initialRange={params.get("range") ?? "today"} initialClient={params.get("client") ?? ""} />;
+	return <Observatory key={`${params.get("model") ?? ""}:${params.get("client") ?? ""}`} view="requests" initialModel={params.get("model") ?? ""} initialRange={params.get("range") ?? ""} initialClient={params.get("client") ?? ""} />;
 }
 
 export default function Page() {

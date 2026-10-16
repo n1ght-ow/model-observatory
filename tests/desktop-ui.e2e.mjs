@@ -47,7 +47,10 @@ page.on("requestfailed", (request) => pendingRequests.delete(request));
 page.on("response", (response) => { if (response.status() >= 400 && !new URL(response.url()).pathname.startsWith("/api/")) resourceErrors.push(`${response.status()} ${response.url()}`); });
 // The app keeps polling. Assert hydrated data and controls rather than waiting
 // for unrelated prefetch/collector traffic to become completely idle.
-const waitData = () => page.getByTestId("request-total").waitFor({ timeout: 120000 });
+const waitData = async () => {
+	await page.locator(".obs-ledger-heading").waitFor({ timeout: 120000 });
+	await page.locator('main[aria-busy="false"]').waitFor({ timeout: 120000 });
+};
 async function verifyMonochrome() {
 	const colored = await page.locator(".observatory, .observatory *").evaluateAll((elements) => {
 		const fields = ["color", "backgroundColor", "borderTopColor", "outlineColor", "fill", "stroke", "caretColor"];
@@ -63,11 +66,18 @@ async function verifyMonochrome() {
 	assert.deepEqual(colored, [], "all rendered surfaces, text, charts and status colors must be grayscale");
 }
 async function range(label) {
-	const response = page.waitForResponse((r) => r.url().includes("/api/observatory?") && r.status() === 200);
+	const ids = { "今天": "today", "24 小时": "24h", "7 天": "7d", "30 天": "30d", "全部": "all" };
+	const response = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/observatory" && new URL(r.url()).searchParams.get("range") === ids[label] && r.status() === 200);
 	await page.getByRole("button", { name: label, exact: true }).click();
-	await response;
-	await page.waitForFunction(() => !document.querySelector(".obs-refresh-controls")?.textContent?.includes("更新中"));
+	const data = await (await response).json();
+	await page.locator('main[aria-busy="false"]').waitFor();
+	assert.equal(await page.getByRole("button", { name: label, exact: true }).getAttribute("aria-pressed"), "true");
+	assert.equal(data.range, ids[label]);
+	assert.equal(new URL(page.url()).searchParams.get("range"), ids[label]);
+	if (await page.getByTestId("request-total").count()) assert.equal(await page.getByTestId("request-total").innerText(), `${new Intl.NumberFormat("zh-CN").format(data.totals.requests)}次`);
+	return data;
 }
+
 try {
 	const response = await fetch(`${BASE}/api/observatory?range=all`);
 	assert.equal(response.status, 200);
@@ -90,7 +100,22 @@ try {
 	await waitData();
 	assert.equal(await page.locator("h1").innerText(), "模型总览");
 	assert.equal(await page.locator("[data-tray-control]").count(), 0);
+	assert.equal(await page.locator(".obs-stat-strip").count(), 1);
+	assert.equal(await page.locator(".obs-request-table").count(), 0);
+	assert.equal(await page.getByRole("link", { name: /导出/ }).count(), 0);
+	assert.equal(await page.getByRole("heading", { name: "最近请求" }).count(), 0);
+	const modelBounds = await page.locator(".obs-model-table").boundingBox();
+	const chartBounds = await page.locator(".obs-activity-section").boundingBox();
+	assert.ok(modelBounds.y < chartBounds.y, "The model ledger must precede the activity chart");
+	for (const label of ["24 小时", "7 天", "30 天", "今天"]) {
+		const data = await range(label);
+		assert.ok(data.since && data.requests.every((row) => row.timeKnown !== false && row.at >= data.since));
+	}
 	await range("全部");
+	await page.reload({ waitUntil: "domcontentloaded" });
+	await waitData();
+	assert.equal(await page.getByRole("button", { name: "全部", exact: true }).getAttribute("aria-pressed"), "true");
+	record("总览独占汇总、账本前移、五种时间范围和刷新后保留");
 	if (all.totals.turnRequests > 0) await page.getByText(/轮会话请求，非底层调用总数/).waitFor();
 	await page.getByRole("button", { name: "暂停实时刷新" }).click();
 	await page.waitForFunction(() => !document.querySelector(".obs-refresh-controls")?.textContent?.includes("更新中"));
@@ -116,17 +141,24 @@ try {
 	assert.equal(await page.getByRole("combobox", { name: "按模型筛选" }).inputValue(), cross.model);
 	assert.equal(await page.getByRole("button", { name: "全部", exact: true }).getAttribute("aria-pressed"), "true");
 	assert.ok((await page.locator(".obs-request-model").allTextContents()).every((m) => m === cross.model));
-	record("模型展开、跨工具分布、带时间范围的请求钻取");
+	assert.equal(await page.locator(".obs-stat-strip").count(), 0);
+	assert.equal(await page.getByTestId("request-total").count(), 0);
+	assert.equal(await page.locator(".obs-activity-section").count(), 0);
+	assert.equal(await page.getByRole("button", { name: "恢复实时刷新" }).count(), 1, "Refresh preference must survive navigation");
+	await range("7 天");
+	await range("全部");
+	record("流水不重复汇总、模型钻取保留范围、暂停状态与流水时间筛选");
 
+	const clearedResponse = page.waitForResponse((r) => r.url().includes("/api/observatory?") && !new URL(r.url()).searchParams.get("model") && r.status() === 200);
 	await page.getByRole("button", { name: "清除筛选", exact: true }).click();
-	await page.waitForResponse((r) => r.url().includes("/api/observatory?") && r.status() === 200);
+	await clearedResponse;
 	await page.waitForFunction(() => !document.querySelector(".obs-refresh-controls")?.textContent?.includes("更新中"));
 	const firstId = await page.locator(".obs-request-table tbody tr").first().getByRole("button").getAttribute("aria-label");
 	await page.getByRole("button", { name: "下一页" }).click();
 	await page.waitForFunction((first) => document.querySelector(".obs-request-table tbody tr button")?.getAttribute("aria-label") !== first, firstId);
 	await page.locator(".obs-request-table tbody tr").first().getByRole("button").click();
 	assert.ok(await page.locator(".obs-request-evidence").isVisible());
-	const href = await page.getByRole("link", { name: "导出请求" }).getAttribute("href");
+	const href = await page.getByRole("link", { name: "导出筛选结果" }).getAttribute("href");
 	const csv = await fetch(BASE + href);
 	assert.match(csv.headers.get("content-type"), /text\/csv/);
 	assert.ok((await csv.text()).includes("原始模型"));
@@ -134,6 +166,13 @@ try {
 
 	await page.getByRole("link", { name: /接入与口径/ }).first().click();
 	await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
+	assert.equal(await page.locator(".obs-range-group").count(), 0);
+	assert.equal(await page.getByRole("link", { name: /导出/ }).count(), 0);
+	assert.equal(await page.locator(".obs-stat-strip").count(), 0);
+	await page.getByText("当前接入状态 · 历史累计记录", { exact: true }).waitFor();
+	assert.match(await page.locator(".obs-coverage-list article").first().innerText(), /读取异常|待接入|暂无记录/);
+	await page.getByRole("button", { name: "立即刷新" }).click();
+	await page.locator('main[aria-busy="false"]').waitFor();
 	const cursorSource = page.locator(".obs-coverage-list article").filter({ has: page.getByRole("heading", { name: /^Cursor/ }) });
 	assert.equal(await cursorSource.count(), 1);
 	assert.match(await cursorSource.innerText(), /按 requestId 去重/);
@@ -163,9 +202,11 @@ try {
 	await page.unroute("**/api/observatory/aliases");
 	record("采集覆盖、ChatGPT 未覆盖提示、命名规则交互");
 
-	await page.goto(BASE, { waitUntil: "domcontentloaded" });
+	await page.getByRole("link", { name: "模型总览", exact: true }).click();
 	await waitData();
-	await page.getByRole("button", { name: "暂停实时刷新" }).click();
+	assert.equal(await page.getByRole("button", { name: "全部", exact: true }).getAttribute("aria-pressed"), "true");
+	await page.getByRole("button", { name: "恢复实时刷新" }).waitFor();
+	record("接入页无无效时间或导出、历史口径明确、跨页范围保持");
 	await page.waitForFunction(() => !document.querySelector(".obs-refresh-controls")?.textContent?.includes("更新中"));
 	const pausedAt = await page.locator(".obs-refresh-controls > span").innerText();
 	await page.waitForTimeout(5500);
@@ -232,10 +273,35 @@ try {
 		assert.ok(await page.getByRole("navigation", { name: "主导航" }).isVisible());
 	}
 	await resize({ width: 1440, height: 1000 });
-	await page.goto(`${BASE}/tools`, { waitUntil: "domcontentloaded" });
-	await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
+	await page.getByRole("link", { name: "请求流水", exact: true }).click();
+	await waitData();
+	await page.screenshot({ path: "logs/desktop-ui-acceptance/requests.png" });
+	await page.getByRole("button", { name: "切换深色" }).click();
+	await page.screenshot({ path: "logs/desktop-ui-acceptance/requests-dark.png" });
 	await verifyMonochrome();
+	await page.getByRole("button", { name: "切换浅色" }).click();
+	await resize({ width: 900, height: 760 });
+	await page.screenshot({ path: "logs/desktop-ui-acceptance/compact.png" });
+	assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+	await resize({ width: 1440, height: 1000 });
+	await page.getByRole("link", { name: "接入与口径", exact: true }).click();
+	await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
+	await page.getByText("统计单位", { exact: true }).click();
+	await page.getByText("独立重试分别计数", { exact: false }).waitFor();
+	await verifyMonochrome();
+	await page.evaluate(() => scrollTo(0, 0));
 	await page.screenshot({ path: "logs/desktop-ui-acceptance/coverage.png" });
+	for (const width of [390, 320]) {
+		await resize({ width, height: 844 });
+		assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+		await page.screenshot({ path: `logs/desktop-ui-acceptance/coverage-${width}.png` });
+		await page.getByRole("link", { name: "请求流水", exact: true }).click();
+		await waitData();
+		assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+		await page.screenshot({ path: `logs/desktop-ui-acceptance/requests-${width}.png` });
+		await page.getByRole("link", { name: "接入与口径", exact: true }).click();
+		await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
+	}
 	assert.deepEqual(errors, []);
 	assert.deepEqual(resourceErrors, [], "Exported navigation and assets must not fail");
 	record("黑白配色、桌面 / 深色 / 390px / 320px / reduced motion 与界面错误检查");

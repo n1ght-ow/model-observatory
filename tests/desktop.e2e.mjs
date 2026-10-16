@@ -98,7 +98,7 @@ try {
 	record("原界面的模型展开、请求钻取、逐请求证据");
 	const csvPath = path.join(evidence, "desktop-export.csv");
 	await electronApp.evaluate(({ session }, target) => { session.defaultSession.once("will-download", (_event, item) => item.setSavePath(target)); }, csvPath);
-	await page.getByRole("link", { name: "导出请求" }).click();
+	await page.getByRole("link", { name: "导出筛选结果" }).click();
 	await waitUntil(() => existsSync(csvPath));
 	assert.match(await readFile(csvPath, "utf8"), /desktop-fixture-model/);
 	record("打包版 CSV 下载与保存");

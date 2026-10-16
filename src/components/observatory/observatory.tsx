@@ -1,9 +1,9 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Activity, ArrowDown, ArrowDownToLine, ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, Layers3, Moon, Pause, Play, Radio, RefreshCw, Search, Sun, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, Layers3, Moon, Pause, Play, Radio, RefreshCw, Search, Sun, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/theme-provider";
 import { AliasEditor } from "./alias-editor";
@@ -77,23 +77,62 @@ function CoverageView({ snapshot, onRulesChanged }: { snapshot: ObservatorySnaps
 		["统一接入", "POST /api/observatory/events 接收模型、时间、工具和 usage。稳定 id 支持重传。可用 ~/.model-observatory/aliases.json 明确配置已确认的模型别名。"],
 		["已知边界", "无法凭空读取封闭客户端的加密流量。本页不是全机网络拦截器。CC Switch 导入账本不参与最终计数；费用与套餐额度不混入请求数量。"],
 	];
-	return <><section className="obs-coverage-intro"><div><Radio size={25} /><h2>模型是主轴，工具只是来源。</h2><p>直接读原始用量，以具体模型合计。路由和工具记录同一次调用时，只有一对一匹配的证据才合并；有歧义的记录单列待核对。</p></div><div className="obs-reconcile-stats">{[[snapshot.reconciliation.observations, "原始观测"], [snapshot.reconciliation.merged, "已合并重复证据"], [snapshot.reconciliation.pending, "待核对 · 暂不计入"]].map(([count, label]) => <div key={label}><strong>{number(Number(count))}</strong><span>{label}</span></div>)}</div></section>
-		<div className="obs-section-heading"><h2>采集覆盖</h2><span>所有时间的来源状态</span></div><div className="obs-coverage-list">{snapshot.coverage.map((s) => <article key={s.id}><span className={cn("obs-source-state", `obs-source-${s.state}`)}>{s.state === "connected" ? <Check size={17} /> : s.state === "unsupported" ? <CircleHelp size={17} /> : <Database size={17} />}</span><div><h3>{s.name}<span className={cn("obs-state-label", `obs-state-${s.state}`)}>{({ connected: "已接入", empty: "暂无记录", error: "读取异常", unsupported: "待接入" })[s.state]}</span></h3><p>{s.description}</p></div><div className="obs-source-count"><strong>{number(s.count)}</strong><span>条原始记录</span></div></article>)}</div>
-		<AliasEditor aliases={snapshot.aliases} names={[...new Set(snapshot.models.flatMap((m) => m.aliases))]} onSaved={onRulesChanged} />
-		<section className="obs-method"><h2>数字怎样算</h2><div>{rules.map(([title, description]) => <article key={title}><h3>{title}</h3><p>{description}</p>{title === "统一接入" && <code>{'{ "id": "request-123", "at": "ISO 时间", "model": "模型名称", "client": "工具名称", "input": 120, "output": 40 }'}</code>}</article>)}</div></section>
-		{snapshot.pending.length > 0 && <section className="obs-recent"><div className="obs-section-heading"><h2>待核对的路由证据</h2><span>存在多个匹配候选，暂不重复加总</span></div><RequestRows rows={snapshot.pending.slice(0, 10)} /></section>}
+	const priority = { error: 0, unsupported: 1, empty: 2, connected: 3 };
+	const sources = [...snapshot.coverage].sort((a, b) => priority[a.state] - priority[b.state]);
+	const connected = sources.filter((source) => source.state === "connected").length;
+	return <>
+		<section className="obs-coverage-intro" aria-label="历史累计核对">
+			<p>当前接入状态 · 历史累计记录</p>
+			<div className="obs-reconcile-stats">{[[snapshot.reconciliation.observations, "原始观测"], [snapshot.reconciliation.merged, "已合并重复证据"], [snapshot.reconciliation.pending, "待核对 · 暂不计入"]].map(([count, label]) => <div key={label}><strong>{number(Number(count))}</strong><span>{label}</span></div>)}</div>
+		</section>
+		{snapshot.pending.length > 0 && <section className="obs-pending"><div className="obs-section-heading"><h2>待核对的路由证据</h2><span>存在多个匹配候选，暂不重复加总</span></div><RequestRows rows={snapshot.pending} /></section>}
+		<div className="obs-section-heading"><h2>采集覆盖</h2><span>{connected} 个来源已接入</span></div>
+		<div className="obs-coverage-list">{sources.map((source) => <article key={source.id}>
+			<span className={cn("obs-source-state", `obs-source-${source.state}`)}>{source.state === "connected" ? <Check size={17} /> : source.state === "unsupported" ? <CircleHelp size={17} /> : <Database size={17} />}</span>
+			<div><h3>{source.name}<span className={cn("obs-state-label", `obs-state-${source.state}`)}>{({ connected: "已接入", empty: "暂无记录", error: "读取异常", unsupported: "待接入" })[source.state]}</span></h3><p>{source.description}</p></div>
+			<div className="obs-source-count"><strong>{number(source.count)}</strong><span>条原始记录</span></div>
+		</article>)}</div>
+		<AliasEditor aliases={snapshot.aliases} names={[...new Set(snapshot.models.flatMap((model) => model.aliases))]} onSaved={onRulesChanged} />
+		<section className="obs-method"><h2>数字怎样算</h2><div>{rules.map(([title, description]) => <details key={title}><summary>{title}</summary><p>{description}</p>{title === "统一接入" && <code>{'{ "id": "request-123", "at": "ISO 时间", "model": "模型名称", "client": "工具名称", "input": 120, "output": 40 }'}</code>}</details>)}</div></section>
 	</>;
 }
 
-export function Observatory({ view = "models", initialModel = "", initialRange = "today", initialClient = "" }: { view?: View; initialModel?: string; initialRange?: string; initialClient?: string }) {
-	const [range, setRange] = useState(ranges.some((r) => r.id === initialRange) ? initialRange : "today"), [snapshot, setSnapshot] = useState<ObservatorySnapshot | null>(null);
-	const [error, setError] = useState(""), [paused, setPaused] = useState(false), [busy, setBusy] = useState(true), [refresh, setRefresh] = useState(0);
+// Session preferences survive route changes without changing server-rendered markup.
+const preferenceListeners = new Set<() => void>();
+const preferenceFallback = new Map<string, string>();
+function subscribePreferences(listener: () => void) {
+	preferenceListeners.add(listener);
+	window.addEventListener("storage", listener);
+	return () => { preferenceListeners.delete(listener); window.removeEventListener("storage", listener); };
+}
+function useSessionPreference(key: string, fallback: string) {
+	const value = useSyncExternalStore(subscribePreferences, () => {
+		try { return sessionStorage.getItem(key) ?? preferenceFallback.get(key) ?? fallback; }
+		catch { return preferenceFallback.get(key) ?? fallback; }
+	}, () => fallback);
+	function update(next: string) {
+		preferenceFallback.set(key, next);
+		try { sessionStorage.setItem(key, next); } catch { /* Keep this window usable without storage. */ }
+		for (const listener of preferenceListeners) listener();
+	}
+	return [value, update] as const;
+}
+
+export function Observatory({ view = "models", initialModel = "", initialRange = "", initialClient = "" }: { view?: View; initialModel?: string; initialRange?: string; initialClient?: string }) {
+	const [savedRange, saveRange] = useSessionPreference("observatory-range", "today");
+	const [pausedPreference, savePaused] = useSessionPreference("observatory-refresh-paused", "false");
+	const preferencesReady = useSyncExternalStore(subscribePreferences, () => true, () => false);
+	const range = ranges.some((r) => r.id === initialRange) ? initialRange : ranges.some((r) => r.id === savedRange) ? savedRange : "today";
+	const paused = pausedPreference === "true";
+	const [snapshot, setSnapshot] = useState<ObservatorySnapshot | null>(null);
+	const [error, setError] = useState(""), [busy, setBusy] = useState(true), [refresh, setRefresh] = useState(0);
 	const [resuming, setResuming] = useState(false);
 	const [query, setQuery] = useState(""), [modelFilter, setModelFilter] = useState(initialModel), [clientFilter, setClientFilter] = useState(initialClient), [page, setPage] = useState(0), [expanded, setExpanded] = useState<string | null>(null);
 	const [sort, setSort] = useState<"requests" | "tokens" | "latest">("requests"), [chartMetric, setChartMetric] = useState<"requests" | "tokens">("requests");
 	const { theme, toggleTheme } = useTheme();
-	const params = useMemo(() => new URLSearchParams({ range, ...(view === "requests" ? { query, model: modelFilter, client: clientFilter, page: String(page) } : { limit: view === "models" ? "5" : "0" }) }).toString(), [range, query, modelFilter, clientFilter, page, view]);
+	const params = useMemo(() => new URLSearchParams({ range: view === "coverage" ? "all" : range, ...(view === "requests" ? { query, model: modelFilter, client: clientFilter, page: String(page) } : { limit: "0" }) }).toString(), [range, query, modelFilter, clientFilter, page, view]);
 	useEffect(() => {
+		if (!preferencesReady) return;
 		let controller: AbortController | undefined;
 		let timer: ReturnType<typeof setTimeout>, active = true, loading = false;
 		const desktop = window.desktopWindow;
@@ -108,6 +147,9 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 				if (!response.ok) throw new Error("读取失败");
 				const data = await response.json() as ObservatorySnapshot;
 				if (active) {
+					if (view !== "coverage") {
+						try { sessionStorage.setItem("observatory-range", range); } catch { /* The URL still retains the range. */ }
+					}
 					setSnapshot((previous) => {
 						if (!previous || previous.generatedAt !== data.generatedAt || previous.range !== data.range || previous.requestCount !== data.requestCount || previous.requests.length !== data.requests.length || previous.requests[0]?.id !== data.requests[0]?.id || previous.requests.at(-1)?.id !== data.requests.at(-1)?.id || previous.totals.requests !== data.totals.requests || previous.totals.input !== data.totals.input || previous.totals.output !== data.totals.output || previous.totals.cache !== data.totals.cache || previous.models.length !== data.models.length || previous.models[0]?.model !== data.models[0]?.model || previous.activity.length !== data.activity.length) return data;
 						if (previous.collection?.collectedAt === data.collection?.collectedAt && previous.collection?.collecting === data.collection?.collecting && previous.collection?.paused === data.collection?.paused && previous.collection?.error === data.collection?.error && previous.collection?.observations === data.collection?.observations) return previous;
@@ -128,10 +170,10 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 		if (desktop) void desktop.isVisible().then((value) => { if (!visibilityEvents) desktopVisible = value; visibilityKnown = true; void load(); }, () => { visibilityKnown = true; void load(); });
 		else void load();
 		return () => { active = false; controller?.abort(); clearTimeout(timer); unsubscribe?.(); document.removeEventListener("visibilitychange", visibilityChanged); };
-	}, [params, paused, refresh]);
+	}, [params, paused, refresh, preferencesReady, range, view]);
 	const modelRows = useMemo(() => (snapshot?.models ?? []).filter((r) => `${r.model} ${r.clients.map((c) => c.name).join(" ")} ${r.aliases.join(" ")}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => sort === "requests" ? b.requests - a.requests : sort === "tokens" ? (b.input + b.output) - (a.input + a.output) : b.latest.localeCompare(a.latest)), [snapshot, query, sort]);
 	const allClients = useMemo(() => { const result = new Map<string, number>(); for (const m of snapshot?.models ?? []) for (const c of m.clients) result.set(c.name, (result.get(c.name) ?? 0) + c.requests); return [...result].sort((a, b) => b[1] - a[1]); }, [snapshot]);
-	const connected = snapshot?.coverage.filter((r) => r.state === "connected").length ?? 0, total = snapshot?.totals;
+	const total = snapshot?.totals;
 	const collectionPaused = snapshot?.collection?.paused ?? false;
 	const titles = { models: "模型总览", requests: "请求流水", coverage: "接入与口径" };
 	async function resumeCollection() {
@@ -147,20 +189,42 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 		} catch { setError("恢复采集失败。请重试，已保存的历史不受影响。"); }
 		finally { setResuming(false); }
 	}
+	function chooseRange(value: string) {
+		saveRange(value); setPage(0);
+		// Keep reloads and copied links consistent with the visible range.
+		const url = new URL(window.location.href);
+		url.searchParams.set("range", value);
+		window.history.replaceState(null, "", url);
+	}
+	const overviewHref = `/?range=${range}`, requestsHref = `/requests?range=${range}`;
+	const rangeDescription = error && snapshot?.range !== range ? "所选范围读取失败 · 保留上次结果" : busy || snapshot?.range !== range ? "正在加载所选范围…" : snapshot?.since ? `北京时间 · ${clock(snapshot.since, true)} 起` : "全部历史 · 包含时间未记录的请求";
 	return <div className="observatory">
-		<aside className="obs-sidebar"><Link href="/" className="obs-brand" aria-label="Model Observatory 首页"><span className="obs-brand-icon"><Image src="/app.ico?v=silver-orbit-1" width={39} height={39} alt="" unoptimized /></span><span>Model<span>Observatory</span></span></Link><div className="obs-workspace"><Layers3 size={16} /><div><strong>我的电脑</strong><span>本地模型用量</span></div><span className="obs-local-dot" /></div><nav aria-label="主导航">{([{ id: "models", href: "/", icon: Layers3, label: "模型总览" }, { id: "requests", href: "/requests", icon: Activity, label: "请求流水" }, { id: "coverage", href: "/tools", icon: Radio, label: "接入与口径" }] as const).map((item) => <Link key={item.id} href={item.href} className={cn("obs-nav-link", view === item.id && "is-active")} aria-current={view === item.id ? "page" : undefined}><item.icon size={17} />{item.label}{item.id === "coverage" && <span className="obs-nav-count">{connected}</span>}</Link>)}</nav><div className="obs-sidebar-bottom"><div className="obs-scope-note"><span className="obs-local-dot" /><strong>在这台电脑上</strong><p>跨工具、跨路由，<br />按模型汇总已观测调用。</p></div><button onClick={toggleTheme} className="obs-theme-button">{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}{theme === "dark" ? "切换浅色" : "切换深色"}</button><span className="obs-version">本地运行 · 数据留在本机</span></div></aside>
-		<div className="obs-main-wrap"><header className="obs-topbar"><div className="obs-breadcrumb"><span>工作空间</span><ChevronRight size={13} /><strong>{titles[view]}</strong></div><div className="obs-top-actions"><span className={cn("obs-live-status", (paused || collectionPaused || error) && "is-paused")}><i />{error ? "连接中断" : collectionPaused ? "采集已暂停" : paused ? "已暂停刷新" : snapshot?.collection?.collecting ? "正在补读" : "实时观测"}</span><button className="obs-icon-button obs-mobile-theme" onClick={toggleTheme} aria-label="切换主题">{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button></div></header>
-		<main className="obs-main"><div className="obs-page-heading"><div><h1>{titles[view]}</h1><p>{view === "models" ? "无论从哪里调用，同一个模型，记在一起。" : view === "requests" ? "每条记录都有出处，每个数字都能追溯。" : "看清已经覆盖的流量，也看清尚未看见的部分。"}</p></div><a className="obs-button" href={`/api/observatory?${params}&format=csv`} download><ArrowDownToLine size={15} />导出请求</a></div>
-		<div className="obs-toolbar"><div className="obs-range-group" aria-label="时间范围">{ranges.map((r) => <button key={r.id} aria-pressed={range === r.id} className={cn(range === r.id && "is-active")} onClick={() => { setRange(r.id); setPage(0); }}>{r.label}</button>)}</div><div className="obs-refresh-controls"><span>{busy ? "更新中…" : snapshot ? `${clock(snapshot.collection?.collectedAt ?? snapshot.generatedAt)} 更新` : "等待连接"}</span><button className="obs-icon-button" aria-label={paused ? "恢复实时刷新" : "暂停实时刷新"} onClick={() => setPaused(!paused)}>{paused ? <Play size={14} /> : <Pause size={14} />}</button><button className="obs-icon-button" aria-label="立即刷新" disabled={busy} onClick={() => setRefresh((n) => n + 1)}><RefreshCw size={14} className={cn(busy && "obs-spinning")} /></button></div></div>
+		<aside className="obs-sidebar">
+			<Link href={overviewHref} className="obs-brand" aria-label="Model Observatory 首页"><span className="obs-brand-icon"><Image src="/app.ico?v=silver-orbit-1" width={39} height={39} alt="" unoptimized /></span><span>Model<span>Observatory</span></span></Link>
+			<nav aria-label="主导航">{([
+				{ id: "models", href: overviewHref, icon: Layers3, label: "模型总览" },
+				{ id: "requests", href: requestsHref, icon: Activity, label: "请求流水" },
+				{ id: "coverage", href: "/tools", icon: Radio, label: "接入与口径" },
+			] as const).map((item) => <Link key={item.id} href={item.href} className={cn("obs-nav-link", view === item.id && "is-active")} aria-current={view === item.id ? "page" : undefined}><item.icon size={17} />{item.label}</Link>)}</nav>
+			<div className="obs-sidebar-bottom"><button onClick={toggleTheme} className="obs-theme-button">{theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}{theme === "dark" ? "切换浅色" : "切换深色"}</button><span className="obs-version">本地运行 · 数据留在本机</span></div>
+		</aside>
+		<div className="obs-main-wrap">
+		<header className="obs-topbar" aria-label="采集与刷新状态">
+			<span className={cn("obs-live-status", (paused || collectionPaused || error) && "is-paused")}><i />{error ? "连接中断" : collectionPaused ? "采集已暂停" : snapshot?.collection?.collecting ? "正在补读" : "采集中"}</span>
+			<div className="obs-refresh-controls"><span>{busy ? "更新中…" : snapshot ? `${clock(snapshot.collection?.collectedAt ?? snapshot.generatedAt)} 更新` : "等待连接"}{paused && " · 刷新已暂停"}</span><button className="obs-icon-button" aria-label={paused ? "恢复实时刷新" : "暂停实时刷新"} onClick={() => savePaused(String(!paused))}>{paused ? <Play size={14} /> : <Pause size={14} />}</button><button className="obs-icon-button" aria-label="立即刷新" disabled={busy} onClick={() => setRefresh((n) => n + 1)}><RefreshCw size={14} className={cn(busy && "obs-spinning")} /></button><button className="obs-icon-button obs-mobile-theme" onClick={toggleTheme} aria-label="切换主题">{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button></div>
+		</header>
+		<main className="obs-main" aria-busy={busy}>
+		<div className="obs-page-heading"><h1>{titles[view]}</h1>{view === "requests" && <a className="obs-button" href={`/api/observatory?${params}&format=csv`} download><ArrowDownToLine size={15} />导出筛选结果</a>}</div>
+		{view !== "coverage" && <div className="obs-toolbar"><div className="obs-range-group" aria-label="时间范围">{ranges.map((r) => <button key={r.id} aria-pressed={range === r.id} className={cn(range === r.id && "is-active")} onClick={() => chooseRange(r.id)}>{r.label}</button>)}</div><span className="obs-range-description">{rangeDescription}</span></div>}
+
 		{snapshot?.collection?.paused && <div className="obs-error-banner" role="status"><span>采集已暂停，历史已保留。恢复后补读暂停期间的原始记录。</span><button disabled={resuming} onClick={resumeCollection}>{resuming ? "补读中…" : "恢复采集"}<Play size={13} /></button></div>}
 		{error && <div className="obs-error-banner" role="alert">{error}<button onClick={() => setRefresh((n) => n + 1)}>重试 <RefreshCw size={13} /></button></div>}
 		{!snapshot ? <div className="obs-loading" role="status"><Radio size={30} /><h2>{error ? "等待本地采集恢复" : "正在读取本机模型记录"}</h2><p>首次读取需要扫描原始日志。只提取模型与用量，不提取对话内容。</p><div className="obs-loading-lines"><i /><i /><i /></div></div> : view === "coverage" ? <CoverageView snapshot={snapshot} onRulesChanged={() => setRefresh((n) => n + 1)} /> : <>
-		<section className="obs-stat-strip" aria-label="模型统计"><div><span>已观测请求</span><strong data-testid="request-total">{number(total!.requests)}<small>次</small></strong><p>{number(total!.models)} 个具体模型 · {number(total!.clients)} 种工具来源</p>{total!.turnRequests > 0 && <p>含 {number(total!.turnRequests)} 轮会话请求，非底层调用总数</p>}</div><div><span>已记录 Token</span><strong>{total!.inputRequests || total!.outputRequests ? compact(total!.input + total!.output) : "未记录"}</strong><p>输入 {tokens(total!.inputRequests ? total!.input : null)} <span>/</span> 输出 {tokens(total!.outputRequests ? total!.output : null)}</p>{total!.tokenRequests < total!.requests && <p>{number(total!.tokenRequests)}/{number(total!.requests)} 条完整用量</p>}</div><div><span>已记录缓存读取</span><strong>{total!.cacheRequests ? compact(total!.cache) : "未记录"}</strong><p>已包含在输入中，不重复相加</p>{total!.cacheRequests < total!.requests && <p>{number(total!.cacheRequests)}/{number(total!.requests)} 条报告缓存</p>}</div><div><span>原始数据接入</span><strong>{connected}<small>个来源</small></strong><p><Link href="/tools">查看覆盖范围 <ArrowUpRight size={12} /></Link></p></div></section>
-		{view === "models" && <section className="obs-chart-grid"><div className="obs-chart-section"><div className="obs-section-heading"><h2>调用活动</h2><div className="obs-small-toggle"><button className={cn(chartMetric === "requests" && "is-active")} onClick={() => setChartMetric("requests")}>请求</button><button className={cn(chartMetric === "tokens" && "is-active")} onClick={() => setChartMetric("tokens")}>Token</button></div></div><ActivityChart points={snapshot.activity} metric={chartMetric} /></div><div className="obs-tool-section"><div className="obs-section-heading"><h2>工具分布</h2><span>{number(allClients.length)} 种来源</span></div><div className="obs-tool-list">{allClients.slice(0, 5).map(([name, count]) => <div key={name}><span className="obs-tool-symbol">{name.slice(0, 1).toUpperCase()}</span><div><div><strong>{name}</strong><span>{number(count)}</span></div><div className="obs-tool-track"><i style={{ width: `${count / Math.max(1, total!.requests) * 100}%` }} /></div></div></div>)}{!allClients.length && <p>当前范围还没有活动</p>}</div></div></section>}
-		<div className="obs-ledger-heading"><div><h2>{view === "models" ? "模型账本" : "全部请求"}</h2><span>{number(view === "models" ? modelRows.length : snapshot.requestCount)} {view === "models" ? "个模型" : "条记录"}</span></div><label className="obs-search"><Search size={15} /><input aria-label={view === "models" ? "搜索模型或工具" : "搜索请求"} placeholder={view === "models" ? "搜索模型、工具…" : "搜索模型、工具、路由…"} value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }} />{query && <button aria-label="清除搜索" onClick={() => setQuery("")}><X size={13} /></button>}</label></div>
-		{view === "models" ? <><div className="obs-table-scroll"><table className="obs-table obs-model-table"><thead><tr><th>模型</th><th><button className={cn(sort === "requests" && "is-sorted")} onClick={() => setSort("requests")}>请求数 <ArrowDown size={12} /></button></th><th><button className={cn(sort === "tokens" && "is-sorted")} onClick={() => setSort("tokens")}>Token <ArrowDown size={12} /></button></th><th className="obs-optional">来自工具</th><th className="obs-optional"><button className={cn(sort === "latest" && "is-sorted")} onClick={() => setSort("latest")}>最近调用 <ArrowDown size={12} /></button></th><th><span className="sr-only">展开模型</span></th></tr></thead><tbody>{modelRows.map((model) => <Fragment key={model.model}><tr className={cn(expanded === model.model && "obs-row-selected")}><td><button className="obs-model-name" aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><span className="obs-model-mark">{modelVendor(model.model).slice(0, 1)}</span><span><strong>{model.model}</strong><span>{modelVendor(model.model)}</span></span></button></td><td className="obs-numeric"><strong>{number(model.requests)}</strong><div className="obs-usage-track"><i style={{ width: `${model.requests / Math.max(1, total!.requests) * 100}%` }} /></div></td><td className="obs-numeric"><ModelUsage model={model} /></td><td className="obs-optional"><div className="obs-client-badges">{model.clients.slice(0, 2).map((client) => <span key={client.name}>{client.name}</span>)}{model.clients.length > 2 && <span>+{model.clients.length - 2}</span>}</div></td><td className="obs-optional obs-time">{clock(model.latest)}</td><td><button className="obs-icon-button" aria-label={`展开 ${model.model}`} aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><ChevronDown size={15} className={cn(expanded === model.model && "obs-rotated")} /></button></td></tr>{expanded === model.model && <tr className="obs-expanded-row"><td colSpan={6}><ModelDetail model={model} range={range} /></td></tr>}</Fragment>)}</tbody></table>{!modelRows.length && <Empty title={query ? "没有匹配的模型" : "还没有模型活动"} text={query ? "试试模型名称的一部分，或搜索工具名称。" : "选择更长的时间范围，或检查数据接入。"} />}</div><div className="obs-table-footnote"><span>模型版本分别统计 · 点击模型查看跨工具分布</span><span>{total!.tokenRequests}/{total!.requests} 条完整 Token 用量</span></div><section className="obs-recent"><div className="obs-section-heading"><h2>最近请求</h2><Link href="/requests">查看全部 <ArrowRight size={14} /></Link></div><RequestRows rows={snapshot.requests.slice(0, 5)} /></section></> : <><div className="obs-request-filters"><label>模型<select aria-label="按模型筛选" value={modelFilter} onChange={(e) => { setModelFilter(e.target.value); setPage(0); }}><option value="">全部模型</option>{snapshot.models.map((r) => <option key={r.model}>{r.model}</option>)}</select></label><label>工具<select aria-label="按工具筛选" value={clientFilter} onChange={(e) => { setClientFilter(e.target.value); setPage(0); }}><option value="">全部工具</option>{allClients.map(([name]) => <option key={name}>{name}</option>)}</select></label>{(modelFilter || clientFilter || query) && <button className="obs-text-button" onClick={() => { setModelFilter(""); setClientFilter(""); setQuery(""); setPage(0); }}>清除筛选 <X size={13} /></button>}</div><RequestRows rows={snapshot.requests} /><div className="obs-pagination"><span>{snapshot.requestCount ? `${number(page * 50 + 1)}–${number(Math.min((page + 1) * 50, snapshot.requestCount))}` : "0"} / {number(snapshot.requestCount)} 条</span><div><button className="obs-button" disabled={page === 0} onClick={() => setPage(page - 1)}><ChevronLeft size={14} />上一页</button><button className="obs-button" disabled={(page + 1) * 50 >= snapshot.requestCount} onClick={() => setPage(page + 1)}>下一页<ChevronRight size={14} /></button></div></div></>}
+		{view === "models" && <section className="obs-stat-strip" aria-label="模型统计"><div><span>已观测请求</span><strong data-testid="request-total">{number(total!.requests)}<small>次</small></strong>{total!.turnRequests > 0 && <p>含 {number(total!.turnRequests)} 轮会话请求，非底层调用总数</p>}</div><div><span>已记录 Token</span><strong>{total!.inputRequests || total!.outputRequests ? compact(total!.input + total!.output) : "未记录"}</strong><p>输入 {tokens(total!.inputRequests ? total!.input : null)} <span>/</span> 输出 {tokens(total!.outputRequests ? total!.output : null)}</p>{total!.tokenRequests < total!.requests && <p>{number(total!.tokenRequests)}/{number(total!.requests)} 条完整用量</p>}</div><div><span>已记录缓存读取</span><strong>{total!.cacheRequests ? compact(total!.cache) : "未记录"}</strong><p>已包含在输入中，不重复相加</p>{total!.cacheRequests < total!.requests && <p>{number(total!.cacheRequests)}/{number(total!.requests)} 条报告缓存</p>}</div></section>}
+
+		<div className="obs-ledger-heading"><div><h2>{view === "models" ? "模型账本" : modelFilter || clientFilter || query ? "筛选结果" : "请求记录"}</h2><span>{number(view === "models" ? modelRows.length : snapshot.requestCount)} {view === "models" ? "个模型" : "条记录"}</span></div><label className="obs-search"><Search size={15} /><input aria-label={view === "models" ? "搜索模型或工具" : "搜索请求"} placeholder={view === "models" ? "搜索模型、工具…" : "搜索模型、工具、路由…"} value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }} />{query && <button aria-label="清除搜索" onClick={() => setQuery("")}><X size={13} /></button>}</label></div>
+		{view === "models" ? <><div className="obs-table-scroll"><table className="obs-table obs-model-table"><thead><tr><th>模型</th><th><button className={cn(sort === "requests" && "is-sorted")} onClick={() => setSort("requests")}>请求数 <ArrowDown size={12} /></button></th><th><button className={cn(sort === "tokens" && "is-sorted")} onClick={() => setSort("tokens")}>Token <ArrowDown size={12} /></button></th><th className="obs-optional">来自工具</th><th className="obs-optional"><button className={cn(sort === "latest" && "is-sorted")} onClick={() => setSort("latest")}>最近调用 <ArrowDown size={12} /></button></th><th><span className="sr-only">展开模型</span></th></tr></thead><tbody>{modelRows.map((model) => <Fragment key={model.model}><tr className={cn(expanded === model.model && "obs-row-selected")}><td><button className="obs-model-name" aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><span className="obs-model-mark">{modelVendor(model.model).slice(0, 1)}</span><span><strong>{model.model}</strong><span>{modelVendor(model.model)}</span>{model.configured > 0 && <span className="obs-identity-label">{model.configured === model.requests ? "配置模型" : "含配置模型"}</span>}</span></button></td><td className="obs-numeric"><strong>{number(model.requests)}</strong><div className="obs-usage-track"><i style={{ width: `${model.requests / Math.max(1, total!.requests) * 100}%` }} /></div></td><td className="obs-numeric"><ModelUsage model={model} /></td><td className="obs-optional"><div className="obs-client-badges">{model.clients.slice(0, 2).map((client) => <span key={client.name}>{client.name}</span>)}{model.clients.length > 2 && <span>+{model.clients.length - 2}</span>}</div></td><td className="obs-optional obs-time">{clock(model.latest)}</td><td><button className="obs-icon-button" aria-label={`展开 ${model.model}`} aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><ChevronDown size={15} className={cn(expanded === model.model && "obs-rotated")} /></button></td></tr>{expanded === model.model && <tr className="obs-expanded-row"><td colSpan={6}><ModelDetail model={model} range={range} /></td></tr>}</Fragment>)}</tbody></table>{!modelRows.length && <Empty title={query ? "没有匹配的模型" : "还没有模型活动"} text={query ? "试试模型名称的一部分，或搜索工具名称。" : "选择更长的时间范围，或检查数据接入。"} />}</div><section className="obs-chart-section obs-activity-section"><div className="obs-section-heading"><h2>调用活动</h2><div className="obs-small-toggle"><button className={cn(chartMetric === "requests" && "is-active")} onClick={() => setChartMetric("requests")}>请求</button><button className={cn(chartMetric === "tokens" && "is-active")} onClick={() => setChartMetric("tokens")}>Token</button></div></div><ActivityChart points={snapshot.activity} metric={chartMetric} /></section></> : <><div className="obs-request-filters"><label>模型<select aria-label="按模型筛选" value={modelFilter} onChange={(e) => { setModelFilter(e.target.value); setPage(0); }}><option value="">全部模型</option>{snapshot.models.map((r) => <option key={r.model}>{r.model}</option>)}</select></label><label>工具<select aria-label="按工具筛选" value={clientFilter} onChange={(e) => { setClientFilter(e.target.value); setPage(0); }}><option value="">全部工具</option>{allClients.map(([name]) => <option key={name}>{name}</option>)}</select></label>{(modelFilter || clientFilter || query) && <button className="obs-text-button" onClick={() => { setModelFilter(""); setClientFilter(""); setQuery(""); setPage(0); }}>清除筛选 <X size={13} /></button>}</div><RequestRows rows={snapshot.requests} /><div className="obs-pagination"><span>{snapshot.requestCount ? `${number(page * 50 + 1)}–${number(Math.min((page + 1) * 50, snapshot.requestCount))}` : "0"} / {number(snapshot.requestCount)} 条</span><div><button className="obs-button" disabled={page === 0} onClick={() => setPage(page - 1)}><ChevronLeft size={14} />上一页</button><button className="obs-button" disabled={(page + 1) * 50 >= snapshot.requestCount} onClick={() => setPage(page + 1)}>下一页<ChevronRight size={14} /></button></div></div></>}
 		</>}
-		<footer className="obs-footer"><span><span className="obs-local-dot" />原始记录驱动 · 不以 CC Switch 导入计数</span><Link href="/tools">数据边界与统计口径 <ArrowUpRight size={12} /></Link></footer>
 		</main></div>
 	</div>;
 }
