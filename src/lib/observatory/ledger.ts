@@ -4,10 +4,11 @@ import { timeBounds, type CustomDates } from "./time-range";
 
 /** One-to-one reconciliation: never dedupe two calls made by the same reader. */
 export function reconcile(observations: ModelEvent[], aliases: Record<string, string> = {}) {
-	type Entry = { row: ModelEvent };
-	const native: Entry[] = [];
-	const routers: Entry[] = [];
-	const stableIds = new Map<string, Entry>();
+	const native: ModelEvent[] = [];
+	const routers: ModelEvent[] = [];
+	// Signed, one-based slots keep revisions in their original owner list
+	// without an extra wrapper object for every historical observation.
+	const stableIds = new Map<string, number>();
 	const modelNames = new Map<string, string>();
 	let merged = 0;
 	for (const observation of observations) {
@@ -16,49 +17,65 @@ export function reconcile(observations: ModelEvent[], aliases: Record<string, st
 		const row = model === observation.model ? observation : { ...observation, model };
 		const key = row.requestId ? `${row.evidence[0].source}:${row.requestId}` : row.id;
 		const previous = stableIds.get(key);
-		if (previous) {
+		if (previous !== undefined) {
+			const list = previous > 0 ? native : routers, index = Math.abs(previous) - 1;
 			// Re-emitted message ids are revisions of one request, not new calls.
-			if ((row.output ?? 0) >= (previous.row.output ?? 0)) previous.row = { ...previous.row, ...row };
+			if ((row.output ?? 0) >= (list[index].output ?? 0)) list[index] = { ...list[index], ...row };
 			merged++;
 			continue;
 		}
-		const entry = { row };
-		stableIds.set(key, entry);
-		(row.evidence[0].kind === "router" ? routers : native).push(entry);
+		const router = row.evidence[0].kind === "router";
+		const list = router ? routers : native;
+		stableIds.set(key, (router ? -1 : 1) * list.push(row));
 	}
-	const byUsage = new Map<string, Entry[]>();
-	for (const entry of native) {
-		const { row } = entry;
+	if (!routers.length) return { events: native, pending: [], merged };
+	// Numeric linked slots replace thousands of bucket arrays and concatenated
+	// model/token keys. Timestamps are parsed once, even in large collision groups.
+	const byUsage = new Map<string, Map<number, number>>();
+	for (const row of routers) {
 		if (row.output === null || row.output === 0) continue;
-		const key = `${row.model}:${row.output}`;
-		const bucket = byUsage.get(key) ?? [];
-		bucket.push(entry);
-		byUsage.set(key, bucket);
+		const outputs = byUsage.get(row.model) ?? new Map<number, number>();
+		outputs.set(row.output, 0);
+		byUsage.set(row.model, outputs);
+	}
+	const next = new Int32Array(native.length), times = new Float64Array(native.length);
+	for (let index = 0; index < native.length; index++) {
+		const row = native[index];
+		if (row.output === null || row.output === 0) continue;
+		const outputs = byUsage.get(row.model);
+		if (!outputs?.has(row.output)) continue;
+		next[index] = outputs.get(row.output) ?? 0;
+		outputs.set(row.output, index + 1);
+		times[index] = Date.parse(row.at);
 	}
 	const used = new Set<string>();
 	const pending: ModelEvent[] = [];
-	for (const routerEntry of routers) {
-		const router = routerEntry.row;
+	for (const router of routers) {
 		const end = Date.parse(router.at);
-		const candidates = (byUsage.get(`${router.model}:${router.output}`) ?? []).filter(({ row }) => {
-			if (used.has(row.id)) return false;
-			const delta = Math.min(Math.abs(Date.parse(row.at) - end), Math.abs(Date.parse(row.at) - end - (router.duration ?? 0)));
-			return delta <= 15_000 && row.input !== null && router.input !== null && row.input === router.input;
-		});
-		if (candidates.length === 1) {
-			const entry = candidates[0], owner = entry.row;
+		let candidate = -1, matches = 0;
+		for (let slot = router.output === null ? 0 : byUsage.get(router.model)?.get(router.output) ?? 0; slot; slot = next[slot - 1]) {
+			const index = slot - 1, row = native[index];
+			if (used.has(row.id)) continue;
+			const delta = Math.min(Math.abs(times[index] - end), Math.abs(times[index] - end - (router.duration ?? 0)));
+			if (delta <= 15_000 && row.input !== null && router.input !== null && row.input === router.input) {
+				candidate = index;
+				if (++matches === 2) break;
+			}
+		}
+		if (matches === 1) {
+			const owner = native[candidate];
 			used.add(owner.id);
 			// Only reconciled or renamed rows need a new object. Raw evidence can
 			// stay shared with the archive and incremental readers across queries.
-			entry.row = { ...owner, evidence: [...owner.evidence, ...router.evidence], upstream: router.upstream, status: router.status, duration: router.duration, identity: "reported", cache: router.cache ?? owner.cache };
+			native[candidate] = { ...owner, evidence: [...owner.evidence, ...router.evidence], upstream: router.upstream, status: router.status, duration: router.duration, identity: "reported", cache: router.cache ?? owner.cache };
 			merged++;
-		} else if (candidates.length > 1) {
+		} else if (matches > 1) {
 			pending.push(router);
 		} else {
-			native.push(routerEntry);
+			native.push(router);
 		}
 	}
-	return { events: native.map(({ row }) => row), pending, merged };
+	return { events: native, pending, merged };
 }
 
 const rangeDuration: Record<string, number> = { "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000 };

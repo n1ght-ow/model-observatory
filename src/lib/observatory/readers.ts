@@ -21,6 +21,17 @@ function event(source: string, identity: string, at: string, model: string, clie
 	return { id, at, rawModel: model, model, client, upstream: "未记录", input: null, output: null, cache: null, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source, kind: "session" }], ...fields };
 }
 
+export function discardCodexPrefix(prefix: string) {
+	// Codex places its envelope type before the potentially huge tool payload.
+	// Match only that known envelope, never a nested or escaped `type` string.
+	const envelope = /^\s*\{\s*(?:"timestamp"\s*:\s*"[^"\\]*"\s*,\s*)?"type"\s*:\s*"([^"\\]+)"/.exec(prefix);
+	if (!envelope) return false;
+	if (envelope[1] === "response_item") return true;
+	if (envelope[1] !== "event_msg") return false;
+	const payload = /^\s*,\s*"payload"\s*:\s*\{\s*"type"\s*:\s*"([^"\\]+)"/.exec(prefix.slice(envelope[0].length));
+	return Boolean(payload && payload[1] !== "token_count");
+}
+
 async function readCodex(): Promise<ModelEvent[]> {
 	const files = (await Promise.all([listFiles(home(".codex", "sessions"), /\.jsonl$/, 5), listFiles(home(".codex", "archived_sessions"), /\.jsonl$/, 2)])).flat();
 	const output: ModelEvent[] = [];
@@ -43,7 +54,7 @@ async function readCodex(): Promise<ModelEvent[]> {
 			return [event("codex", `${state.session}:${state.counter}:${total}`, text(record.timestamp), state.model, state.client, {
 				input: num(usage.input_tokens), output: num(usage.output_tokens), cache: num(usage.cached_input_tokens), identity: "configured",
 			})];
-		}, (line) => /"(?:session_meta|turn_context|token_count)"/.test(line))) output.push(row);
+		}, (line) => /"(?:session_meta|turn_context|token_count)"/.test(line), discardCodexPrefix)) output.push(row);
 	}
 	return output;
 }

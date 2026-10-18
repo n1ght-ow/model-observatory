@@ -2,16 +2,16 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import * as health from "./health";
 import * as observatory from "./observatory";
 import * as aliases from "./aliases";
 import * as events from "./events";
 import * as collection from "./collection";
+import type { ApiRequest, ApiResponse } from "./message";
 export { closeCollection } from "../lib/observatory/store";
 
-type Handler = (request: Request) => Promise<Response>;
+type Handler = (request: ApiRequest) => Promise<ApiResponse>;
 const routes: Record<string, { handlers: Record<string, Handler>; limit?: number }> = {
 	"/api/health": { handlers: { GET: health.GET } },
 	"/api/observatory": { handlers: { GET: observatory.GET } },
@@ -59,13 +59,15 @@ export function createDesktopServer(assets: string, token: string) {
 					chunks.push(chunk);
 				}
 			} else request.resume();
-			const headers = new Headers();
-			for (const [key, value] of Object.entries(request.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
-			const result = await handler(new Request(url, { method, headers, ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) }));
-			response.writeHead(result.status, Object.fromEntries(result.headers));
-			if (method === "HEAD") { await result.body?.cancel(); response.end(); }
-			else if (result.body) await pipeline(Readable.fromWeb(result.body as import("node:stream/web").ReadableStream), response);
-			else response.end();
+			const result = await handler({
+				url: url.href,
+				headers: { get(name: string) { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value.join(", ") : value ?? null; } },
+				text: async () => Buffer.concat(chunks, size).toString("utf8").replace(/^\uFEFF/, ""),
+			});
+			response.writeHead(result.status, result.headers);
+			if (method === "HEAD") { if (typeof result.body !== "string") result.body.destroy(); response.end(); }
+			else if (typeof result.body === "string") response.end(result.body);
+			else await pipeline(result.body, response);
 			return;
 		}
 		request.resume();

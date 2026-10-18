@@ -1,3 +1,4 @@
+import { jsonResponse, type ApiRequest } from "./message";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { storeDir } from "../lib/observatory/store";
@@ -6,8 +7,8 @@ import { isLocalMutation } from "../lib/observatory/request-origin";
 
 let writing: Promise<unknown> = Promise.resolve();
 
-export async function POST(request: Request) {
-	if (!isLocalMutation(request)) return Response.json({ error: "仅接受本地同源修改" }, { status: 403 });
+export async function POST(request: ApiRequest) {
+	if (!isLocalMutation(request)) return jsonResponse({ error: "仅接受本地同源修改" }, { status: 403 });
 	try {
 		const raw = await request.text();
 		if (Buffer.byteLength(raw) > 2048) throw new Error("规则过长");
@@ -28,6 +29,6 @@ export async function POST(request: Request) {
 		});
 		writing = change;
 		await change;
-		return Response.json({ saved: true });
-	} catch { return Response.json({ error: "规则保存失败，请检查名称并重试" }, { status: 400 }); }
+		return jsonResponse({ saved: true });
+	} catch { return jsonResponse({ error: "规则保存失败，请检查名称并重试" }, { status: 400 }); }
 }

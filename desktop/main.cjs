@@ -4,6 +4,7 @@ const path = require("node:path");
 const net = require("node:net");
 const { randomBytes } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
+const { localJson } = require("./request.cjs");
 
 if (process.env.OBSERVATORY_DESKTOP_USER_DATA) app.setPath("userData", path.resolve(process.env.OBSERVATORY_DESKTOP_USER_DATA));
 app.setName("Model Observatory");
@@ -134,9 +135,7 @@ async function collect() {
 	if (!origin || collectionRequest || quitting) return;
 	const request = new AbortController(); collectionRequest = request;
 	try {
-		const response = await fetch(origin + "/api/observatory/collection", { method: "POST", headers: { "Content-Type": "application/json", Origin: origin }, body: '{"action":"collect"}', signal: AbortSignal.any([request.signal, AbortSignal.timeout(90000)]) });
-		await response.arrayBuffer();
-		if (!response.ok) log(`Collection HTTP ${response.status}`);
+		await localJson(origin + "/api/observatory/collection", { body: '{"action":"collect"}', signal: AbortSignal.any([request.signal, AbortSignal.timeout(90000)]) });
 	} catch (error) { if (!quitting && !request.signal.aborted) log(`Collection: ${error.message}`); }
 	finally { if (collectionRequest === request) collectionRequest = undefined; }
 }
@@ -169,7 +168,7 @@ async function launchService() {
 		});
 	});
 	if (quitting) return;
-	const health = await fetch(origin + "/api/health", { signal: AbortSignal.any([startupRequest.signal, AbortSignal.timeout(45000)]) }).then((r) => r.json());
+	const health = await localJson(origin + "/api/health", { signal: AbortSignal.any([startupRequest.signal, AbortSignal.timeout(45000)]) });
 	if (quitting) return;
 	if (child !== service) throw new Error("Local service exited during startup");
 	if (health.app !== "router-monitor-dashboard" || !health.ok) throw new Error("Local service health check failed");

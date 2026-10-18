@@ -145,7 +145,17 @@ export class ObservationArchive {
 		const coverage = JSON.parse(this.value("coverage") ?? "[]") as Coverage[];
 		// Counts describe retained evidence; the source state still reports read failures.
 		const counts = new Map<string, { count: number; latest: string | null }>();
-		for (const row of observations) for (const source of new Set(row.evidence.map((e) => e.kind === "event" ? "events" : e.source))) {
+		for (const row of observations) for (let index = 0; index < row.evidence.length; index++) {
+			const evidence = row.evidence[index];
+			const source = evidence.kind === "event" ? "events" : evidence.source;
+			// Most rows have one source. Avoid a temporary array and Set per
+			// historical request while still counting repeated evidence only once.
+			let duplicate = false;
+			for (let previous = 0; previous < index; previous++) {
+				const entry = row.evidence[previous];
+				if ((entry.kind === "event" ? "events" : entry.source) === source) { duplicate = true; break; }
+			}
+			if (duplicate) continue;
 			const value = counts.get(source) ?? { count: 0, latest: null };
 			value.count++;
 			if (row.timeKnown !== false && (value.latest === null || row.at > value.latest)) value.latest = row.at;

@@ -14,11 +14,39 @@ const { normalizeModel } = require("../src/lib/observatory/identity.ts");
 const { reconcile, makeSnapshot, eventTimes, nextSnapshotChange } = require("../src/lib/observatory/ledger.ts");
 const { timeBounds, validCustomDates } = require("../src/lib/observatory/time-range.ts");
 const { scanJsonl, releaseCommittedJsonl } = require("../src/lib/observatory/jsonl.ts");
+const { discardCodexPrefix } = require("../src/lib/observatory/readers.ts");
 const { readDshSessionFile, releaseCommittedDsh } = require("../src/lib/observatory/sources/dsh.ts");
 const { ObservationArchive } = require("../src/lib/observatory/archive.ts");
 const now = Date.parse("2026-10-14T06:00:00Z");
 const row = (id, changes = {}) => ({ id, at: "2026-10-14T05:00:00Z", model: "gpt-6.1-sol", rawModel: "gpt-6.1-sol", client: "Codex", upstream: "未记录", input: 1000, output: 100, cache: 500, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source: "codex", kind: "session" }], ...changes });
 const route = (id, changes = {}) => row(id, { rawModel: "openai/gpt-6.1-sol", client: "未识别工具", upstream: "openai", evidence: [{ id, source: "router", kind: "router" }], ...changes });
+
+test("Codex discards only recognized non-usage envelopes and resumes after split, long and rotated lines", async () => {
+	for (const prefix of ['{"type":"response_item","payload":', '{"timestamp":"2026-10-18","type":"response_item",', '{"type":"event_msg","payload":{"type":"agent_message",']) assert.equal(discardCodexPrefix(prefix), true);
+	for (const prefix of ['{"type":"event_msg","payload":{"type":"token_count",', '{"type":"session_meta",', '{"type":"turn_context",', '{"unknown":{},"type":"response_item",', '{"payload":{"type":"response_item"},"type":"event_msg"}', '{"type":"new_record_type"}', '{"type":"event_msg","payload":{"unknown":1,"type":"token_count"}}']) assert.equal(discardCodexPrefix(prefix), false);
+	const dir = await mkdtemp(join(tmpdir(), "observatory-prefix-")), path = join(dir, "log.jsonl"), ns = `observatory-prefix-${dir}`;
+	const parsed = [];
+	const read = () => scanJsonl(path, ns, () => ({}), (value, _state, ordinal) => { parsed.push(value.type); return [{ ordinal, value }]; }, undefined, (prefix) => { assert.ok(Buffer.byteLength(prefix) <= 514); return discardCodexPrefix(prefix); });
+	const wanted = { type: "event_msg", payload: { type: "token_count", value: "用量" } };
+	try {
+		await writeFile(path, '{"type":"res');
+		assert.deepEqual(await read(), []);
+		await appendFile(path, 'ponse_item","payload":{"text":"' + "x".repeat(3 * 1024 * 1024));
+		assert.deepEqual(await read(), []);
+		await releaseCommittedJsonl(ns);
+		await appendFile(path, '"}}\n' + JSON.stringify(wanted) + '\n');
+		assert.deepEqual(await read(), [{ ordinal: 0, value: wanted }]);
+		assert.deepEqual(parsed, ["event_msg"]);
+		await releaseCommittedJsonl(ns);
+		const reordered = { payload: { type: "token_count" }, type: "event_msg" };
+		await appendFile(path, JSON.stringify(reordered) + '\n');
+		assert.deepEqual(await read(), [{ ordinal: 1, value: reordered }]);
+		await appendFile(path, '{"type":"response_item","payload":"pending');
+		await read();
+		await writeFile(path, JSON.stringify(wanted) + '\n');
+		assert.deepEqual(await read(), [{ ordinal: 0, value: wanted }]);
+	} finally { await rm(dir, { recursive: true, force: true }); await releaseCommittedJsonl(ns); }
+});
 
 test("calendar ranges use Beijing Monday/month boundaries and expire at rollover", () => {
 	const sunday = Date.parse("2026-11-01T15:59:59.999Z"), monday = sunday + 1;
@@ -147,6 +175,37 @@ test("prepared ledger matches fresh snapshots across ranges, advancing time and 
 			assert.deepEqual(makeSnapshot(rows, [], range, aliases, at, timed), makeSnapshot(rows, [], range, aliases, at));
 		}
 	}
+});
+
+test("compact reconciliation preserves revisions, unique ownership and ambiguity in large usage buckets", () => {
+	const native = Array.from({ length: 5000 }, (_, index) => row(`same-usage-${index}`, { at: new Date(now - index * 60000).toISOString() }));
+	const revised = row("revision-new-id", { requestId: "stream", output: 400 });
+	const rows = [...native, row("revision-first", { requestId: "stream", output: 200 }), revised,
+		route("unique", { at: native[2500].at }), route("used", { at: native[2500].at }),
+		row("ambiguous-a"), row("ambiguous-b"), route("ambiguous"),
+		route("revision-owner", { output: 400 }), route("missing", { output: null })];
+	const before = JSON.stringify(rows);
+	const result = reconcile(rows);
+	assert.equal(result.merged, 3);
+	assert.deepEqual(result.pending.map((r) => r.id), ["ambiguous"]);
+	assert.equal(result.events.find((r) => r.id === native[2500].id).evidence[1].id, "unique");
+	assert.ok(result.events.some((r) => r.id === "used"));
+	assert.ok(result.events.some((r) => r.id === "missing"));
+	assert.equal(result.events.find((r) => r.requestId === "stream").evidence[1].id, "revision-owner");
+	assert.equal(JSON.stringify(rows), before);
+});
+
+test("archive coverage counts each evidence source once, including shared event ownership", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "observatory-coverage-"));
+	const archive = new ObservationArchive(join(dir, "history.sqlite"));
+	try {
+		archive.commit([row("multi", { evidence: [
+			{ id: "a", source: "codex", kind: "session" }, { id: "b", source: "codex", kind: "session" },
+			{ id: "c", source: "event:a", kind: "event" }, { id: "d", source: "event:b", kind: "event" },
+			{ id: "e", source: "router", kind: "router" },
+		] })], ["codex", "events", "router"].map((id) => ({ id, name: id, state: "empty", count: 0, latest: null, description: "fixture" })));
+		assert.deepEqual(archive.read().coverage.map((r) => [r.id, r.count, r.state]), [["codex", 1, "connected"], ["events", 1, "connected"], ["router", 1, "connected"]]);
+	} finally { archive.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("saved history is readable during slow catch-up, then refreshes after commit and alias changes", async () => {

@@ -1,4 +1,4 @@
-export function isLocalMutation(request: Request) {
+export function isLocalMutation(request: { url: string; headers: Pick<Headers, "get"> }) {
 	const origin = request.headers.get("origin");
 	if (!origin) return true;
 	const url = new URL(request.url);
