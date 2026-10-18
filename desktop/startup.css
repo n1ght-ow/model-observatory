@@ -1,10 +1,10 @@
-:root { color-scheme: light dark; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
-body { margin: 0; background: #fafafa; color: #181818; }
+:root { color-scheme: dark; font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+body { margin: 0; background: #141414; color: #ededed; }
 main { max-width: 540px; margin: 18vh auto; padding: 32px; }
 .mark { font-size: 40px; }
-.brand { font-size: 11px; letter-spacing: .16em; margin-top: 30px; }
+.brand { font-size: 13px; margin-top: 30px; color: #aaa; }
 h1 { font-size: 27px; font-weight: 600; margin-top: 16px; }
-#status { color: #666; font-size: 14px; line-height: 1.8; }
-button { margin: 18px 10px 0 0; padding: 9px 16px; border: 1px solid #bdbdbd; border-radius: 7px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+#status { color: #aaa; font-size: 14px; line-height: 1.8; }
+button { margin: 18px 10px 0 0; padding: 9px 16px; border: 1px solid #444; border-radius: 7px; background: #222; color: inherit; font: inherit; cursor: pointer; }
+button:hover { background: #303030; }
 button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
-@media (prefers-color-scheme: dark) { body { background: #171717; color: #eee; } #status { color: #aaa; } }

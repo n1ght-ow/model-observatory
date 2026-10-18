@@ -28,11 +28,11 @@ function applyTheme(theme: Theme) {
 
 function getStoredTheme(): Theme {
 	if (typeof window === "undefined") {
-		return "light";
+		return "dark";
 	}
-	return window.localStorage.getItem(THEME_STORAGE_KEY) === "dark"
-		? "dark"
-		: "light";
+	return window.localStorage.getItem(THEME_STORAGE_KEY) === "light"
+		? "light"
+		: "dark";
 }
 
 function subscribeTheme(listener: () => void) {
@@ -57,7 +57,7 @@ function getThemeSnapshot(): Theme {
 }
 
 function getServerThemeSnapshot(): Theme {
-	return "light";
+	return "dark";
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
@@ -94,4 +94,4 @@ export function useTheme() {
 }
 
 /** Injected before hydration so the stored theme applies without a flash. */
-export const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem('${THEME_STORAGE_KEY}');if(t==='dark'){document.documentElement.classList.add('dark');document.documentElement.style.colorScheme='dark';}}catch(e){}})();`;
+export const THEME_INIT_SCRIPT = `(function(){var t='dark';try{if(localStorage.getItem('${THEME_STORAGE_KEY}')==='light')t='light';}catch(e){}document.documentElement.classList.toggle('dark',t==='dark');document.documentElement.style.colorScheme=t;})();`;

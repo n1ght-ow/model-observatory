@@ -1,7 +1,8 @@
 * { box-sizing: border-box; }
 html { height: 100%; font-family: var(--font-geist-sans), sans-serif; -webkit-font-smoothing: antialiased; }
 body { min-height: 100%; margin: 0; background: #fff; color: #171717; }
-html.dark body { background: #111; color: #f2f2f2; }
+html.dark { color-scheme: dark; }
+html.dark body { background: #141414; color: #ededed; }
 button, input, select { font: inherit; color: inherit; }
 button { border: 0; padding: 0; background: transparent; }
 a { color: inherit; }

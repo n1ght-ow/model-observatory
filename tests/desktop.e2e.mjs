@@ -106,6 +106,9 @@ try {
 	await page.getByRole("link", { name: /接入与口径/ }).first().click();
 	await page.getByRole("heading", { name: "采集覆盖", exact: true }).waitFor();
 	await page.locator(".obs-coverage-list article").filter({ hasText: "Cursor" }).first().waitFor();
+	assert.equal(await page.locator("html").evaluate((el) => el.classList.contains("dark")), true, "Fresh desktop installs default to dark mode");
+	await page.getByRole("button", { name: "切换浅色", exact: true }).click();
+	assert.equal(await page.locator("html").evaluate((el) => el.classList.contains("dark")), false);
 	await page.getByRole("button", { name: "切换深色", exact: true }).click();
 	assert.equal(await page.locator("html").evaluate((el) => el.classList.contains("dark")), true);
 	await page.screenshot({ path: path.join(evidence, "desktop-dark.png") });

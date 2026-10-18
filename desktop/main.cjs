@@ -259,7 +259,7 @@ else {
 		const icon = app.isPackaged ? path.join(__dirname, "icon.ico") : path.join(__dirname, "..", "public", "app.ico");
 		window = new BrowserWindow({
 			title: "Model Observatory", width, height, minWidth: Math.min(780, work.width), minHeight: Math.min(600, work.height), ...(visibleBounds ? { x: Math.round(settings.x), y: Math.round(settings.y) } : {}),
-			icon, show: false, backgroundColor: "#fafafa", autoHideMenuBar: true,
+			icon, show: false, backgroundColor: "#141414", autoHideMenuBar: true,
 			webPreferences: { preload: path.join(__dirname, "preload.cjs"), nodeIntegration: false, contextIsolation: true, sandbox: true, spellcheck: false, backgroundThrottling: true },
 		});
 		window.setAlwaysOnTop(Boolean(settings.topMost));

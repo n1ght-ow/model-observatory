@@ -129,3 +129,11 @@ Next 只在构建时导出原 React 界面。运行时不再加载 Next 服务�
 最终包通过 14 项打包桌面检查、12 组 EXE 内界面检查，界面和资源错误为空；覆盖 390px / 320px、深浅主题、CSV、隐藏继续采集、崩溃恢复、单实例、退出排空及离线补采。报告为 `logs/desktop-acceptance/report.json` 与 `logs/desktop-ui-acceptance/e2e.json`。
 
 本机安装版已升级为 0.2.6。安装后再次验证控制台和页面错误为空、后台采集开启、开机启动开启、软件绘制和桌面会话限制生效；当时为 30,976 条请求、47 个模型、37 条 Cursor 轮次。EXE、app.asar 和服务包与最终构建的 SHA256 相同；见 `logs/desktop-installed-report.json` 及 `logs/desktop-installed-build-verification-0.2.6.json`。发行校验值在 `dist/desktop/release-info.json`。未提交、未推送。
+
+## 2026-10-18 深色界面升级
+
+默认改为石墨深色，保留明确的深浅主题记忆；同步启动页、窗口底色、统计横条、账本、日期面板和来源列表。保留原有日期筛选与性能改动，统计及后台采集逻辑未在本次调整。
+
+最终构建通过 37 项单元测试、13 组 UI 验收、14 项桌面检查及 Lint。新增默认深色和刷新后主题记忆验证；继续覆盖日期范围、模型钻取、证据、CSV、暂停恢复、窗口生命周期及离线补读。Electron 实际截图检查 1440px、900px、390px，原 UI 验收另覆盖 320px。截图位于 `logs/dark-ui/`；接入页可见文本对比度检查和本次截图流程的控制台、页面错误均为空，见 `visual-checks.json`。未进行新的性能基准，不将视觉变化描述为性能提升。
+
+已使用最终安装包更新本机应用。实际安装 EXE 验证为深色、窗口可见、软件绘制且无控制台或页面错误；EXE、app.asar 和服务 UI 等 56 个文件的 SHA256 与最终打包目录一致。证据为 `logs/dark-ui/installed.json`、`installed-hashes.json` 和 `installed.png`。版本沿用 0.2.7，未提交、未推送。

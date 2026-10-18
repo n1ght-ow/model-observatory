@@ -99,6 +99,16 @@ try {
 	await page.goto(BASE, { waitUntil: "domcontentloaded" });
 	await waitData();
 	assert.equal(await page.locator("h1").innerText(), "模型总览");
+	assert.ok(await page.locator("html").evaluate((el) => el.classList.contains("dark")), "A fresh desktop profile must open in dark mode");
+	await page.getByRole("button", { name: "切换浅色", exact: true }).click();
+	await page.reload({ waitUntil: "domcontentloaded" });
+	await waitData();
+	assert.equal(await page.locator("html").evaluate((el) => el.classList.contains("dark")), false, "An explicit light preference must survive reload");
+	await page.getByRole("button", { name: "切换深色", exact: true }).click();
+	await page.reload({ waitUntil: "domcontentloaded" });
+	await waitData();
+	assert.ok(await page.locator("html").evaluate((el) => el.classList.contains("dark")), "An explicit dark preference must survive reload");
+	await page.getByRole("button", { name: "切换浅色", exact: true }).click();
 	assert.equal(await page.locator("[data-tray-control]").count(), 0);
 	assert.equal(await page.locator(".obs-stat-strip").count(), 1);
 	assert.equal(await page.locator(".obs-request-table").count(), 0);
