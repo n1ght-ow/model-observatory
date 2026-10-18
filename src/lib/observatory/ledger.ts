@@ -1,5 +1,6 @@
 import { normalizeModel } from "./identity";
 import type { ModelEvent, ModelSummary, ObservatorySnapshot, Coverage } from "./types";
+import { timeBounds, type CustomDates } from "./time-range";
 
 /** One-to-one reconciliation: never dedupe two calls made by the same reader. */
 export function reconcile(observations: ModelEvent[], aliases: Record<string, string> = {}) {
@@ -7,9 +8,11 @@ export function reconcile(observations: ModelEvent[], aliases: Record<string, st
 	const native: Entry[] = [];
 	const routers: Entry[] = [];
 	const stableIds = new Map<string, Entry>();
+	const modelNames = new Map<string, string>();
 	let merged = 0;
 	for (const observation of observations) {
-		const model = normalizeModel(observation.rawModel, aliases);
+		let model = modelNames.get(observation.rawModel);
+		if (model === undefined) { model = normalizeModel(observation.rawModel, aliases); modelNames.set(observation.rawModel, model); }
 		const row = model === observation.model ? observation : { ...observation, model };
 		const key = row.requestId ? `${row.evidence[0].source}:${row.requestId}` : row.id;
 		const previous = stableIds.get(key);
@@ -69,28 +72,29 @@ export function eventTimes(events: ModelEvent[]) {
 /** The instant a cached window would gain or lose a record. `all` stays valid
  * until a future-dated record becomes current; sliding ranges also expire the
  * oldest included record. Callers reuse the snapshot until then. */
-export function nextSnapshotChange(range: string, now: number, events: ModelEvent[], times: Float64Array) {
+export function nextSnapshotChange(range: string, now: number, events: ModelEvent[], times: Float64Array, dates?: CustomDates) {
 	let until = Number.POSITIVE_INFINITY;
-	if (range === "today") until = Date.parse(new Date(now + 8 * 3_600_000).toISOString().slice(0, 10) + "T00:00:00+08:00") + 86_400_000;
+	const bounds = timeBounds(range, now, dates);
+	if (range !== "custom" && bounds.until !== null) until = bounds.until;
 	const duration = rangeDuration[range];
 	for (let index = 0; index < events.length; index++) {
 		const at = times[index];
 		if (!Number.isFinite(at)) continue;
-		if (at > now && at < until) until = at;
+		if (at > now && at < until && (bounds.since === null || at >= bounds.since) && (bounds.until === null || at < bounds.until)) until = at;
 		if (duration && events[index].timeKnown !== false && at <= now && at >= now - duration) until = Math.min(until, at + duration + 1);
 	}
 	return until;
 }
 
-export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], range: string, aliases: Record<string, string>, now = Date.now(), prepared?: ReturnType<typeof reconcile> & { times?: Float64Array }): ObservatorySnapshot {
+export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], range: string, aliases: Record<string, string>, now = Date.now(), prepared?: ReturnType<typeof reconcile> & { times?: Float64Array }, dates?: CustomDates): ObservatorySnapshot {
 	const ledger = prepared ?? reconcile(observations, aliases);
-	const since = range === "today" ? Date.parse(new Date(now + 8 * 3_600_000).toISOString().slice(0, 10) + "T00:00:00+08:00") : rangeDuration[range] ? now - rangeDuration[range] : null;
+	const { since, until } = timeBounds(range, now, dates);
 	const source = ledger.events;
 	const parsed = prepared?.times?.length === source.length ? prepared.times : eventTimes(source);
 	const selected: number[] = [];
 	for (let index = 0; index < source.length; index++) {
 		const at = parsed[index], row = source[index];
-		if (Number.isFinite(at) && at <= now && (since === null || (row.timeKnown !== false && at >= since))) selected.push(index);
+		if (Number.isFinite(at) && at <= now && (since === null || (row.timeKnown !== false && at >= since)) && (until === null || at < until)) selected.push(index);
 	}
 	// The unfiltered ledger is already the response list. A window keeps only
 	// its own index array, so a one-day view does not copy the whole history.
@@ -137,14 +141,16 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 		clients.add(row.client);
 	}
 	const list = [...models.values()].sort((a, b) => b.requests - a.requests);
-	const bucketMs = since !== null && now - since <= 86_400_000 ? 3_600_000 : 86_400_000;
+	const end = Math.min(now, until === null ? now : until - 1);
+	const span = end - (since ?? end - 86_400_000);
+	const bucketMs = since !== null && span <= 86_400_000 ? 3_600_000 : Math.max(1, Math.ceil(span / (120 * 86_400_000))) * 86_400_000;
 	let earliest = now - 86_400_000;
 	if (since === null) for (let index = 0; index < events.length; index++) if (events[index].timeKnown !== false && times[index] < earliest) earliest = times[index];
 	const start = since ?? earliest;
-	const offset = bucketMs === 86_400_000 ? 8 * 3_600_000 : 0;
+	const offset = bucketMs >= 86_400_000 ? 8 * 3_600_000 : 0;
 	const bucketAt = (at: number) => Math.floor((at + offset) / bucketMs) * bucketMs - offset;
 	const buckets = new Map<number, { at: string; requests: number; tokens: number }>();
-	for (let at = bucketAt(start); at <= now; at += bucketMs) buckets.set(at, { at: new Date(at).toISOString(), requests: 0, tokens: 0 });
+	for (let at = bucketAt(start); at <= end; at += bucketMs) buckets.set(at, { at: new Date(at).toISOString(), requests: 0, tokens: 0 });
 	for (let index = 0; index < events.length; index++) {
 		if (events[index].timeKnown === false) continue;
 		const bucket = buckets.get(bucketAt(times[index]));
@@ -152,7 +158,7 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 	}
 	if (!prepared) events.sort((a, b) => b.at.localeCompare(a.at));
 	return {
-		generatedAt: new Date(now).toISOString(), range, since: since === null ? null : new Date(since).toISOString(),
+		generatedAt: new Date(now).toISOString(), range, since: since === null ? null : new Date(since).toISOString(), until: until === null ? null : new Date(until).toISOString(),
 		totals: { requests: events.length, turnRequests, models: models.size, clients: clients.size, input, output, cache, inputRequests, outputRequests, cacheRequests, errors, tokenRequests },
 		models: list, activity: [...buckets.values()], requests: events, requestCount: events.length, coverage,
 		reconciliation: { observations: observations.length, merged: ledger.merged, pending: ledger.pending.length, excluded: 0 },

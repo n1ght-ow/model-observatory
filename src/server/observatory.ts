@@ -1,12 +1,15 @@
 import { getSnapshot } from "../lib/observatory/store";
+import { validCustomDates } from "../lib/observatory/time-range";
 
 
 export async function GET(request: Request) {
 	const url = new URL(request.url);
 	const range = url.searchParams.get("range") ?? "today";
-	if (!["today", "24h", "7d", "30d", "all"].includes(range)) return Response.json({ error: "无效时间范围" }, { status: 400 });
+	if (!["today", "week", "month", "custom", "24h", "7d", "30d", "all"].includes(range)) return Response.json({ error: "无效时间范围" }, { status: 400 });
+	const dates = range === "custom" ? { from: url.searchParams.get("from") ?? "", to: url.searchParams.get("to") ?? "" } : undefined;
+	if (dates && !validCustomDates(dates)) return Response.json({ error: "请选择有效的起止日期，开始日期不能晚于结束日期" }, { status: 400 });
 	try {
-		const snapshot = await getSnapshot(range);
+		const snapshot = await getSnapshot(range, dates);
 		const query = (url.searchParams.get("query") ?? "").toLowerCase().slice(0, 200);
 		const model = url.searchParams.get("model");
 		const client = url.searchParams.get("client");

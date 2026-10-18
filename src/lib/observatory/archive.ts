@@ -10,6 +10,7 @@ export class ObservationArchive {
 	private db: DatabaseSync;
 	private dataVersion = -1;
 	private accepted = new Map<string, ModelEvent>();
+	private strings = new Map<string, string>();
 	private loaded = false;
 	private observationRevision = 0;
 	get revision() { return this.observationRevision; }
@@ -53,7 +54,7 @@ export class ObservationArchive {
 		if (version !== this.dataVersion) {
 			this.observationRevision++;
 			this.dataVersion = version;
-			this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined;
+			this.accepted.clear(); this.strings.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined;
 		}
 	}
 	state(): CollectionState {
@@ -83,7 +84,7 @@ export class ObservationArchive {
 				if (Number(this.insertEvent.run(event.id, serialized).changes)) {
 					this.accepted.set(event.id, this.immutable(event)); this.observations = undefined; changed = true; recordsChanged = true;
 				} else if (!previous) {
-					this.accepted.set(event.id, this.immutable(JSON.parse(String(this.readEvent.get(event.id)?.event))));
+					this.accepted.set(event.id, this.decode(String(this.readEvent.get(event.id)?.event)));
 					this.observations = undefined; changed = true; recordsChanged = true;
 				}
 			}
@@ -104,13 +105,39 @@ export class ObservationArchive {
 		Object.freeze(event.evidence);
 		return Object.freeze(event);
 	}
+	private shared<T extends string>(value: T): T {
+		const previous = this.strings.get(value);
+		if (previous !== undefined) return previous as T;
+		// Client-supplied names may be unique. Bound the pool independently of
+		// ledger growth; evicting a name does not change any published record.
+		if (this.strings.size >= 2048) this.strings.delete(this.strings.keys().next().value!);
+		this.strings.set(value, value);
+		return value;
+	}
+	private decode(serialized: string) {
+		// JSON gives every row its own copies of long model and source names.
+		// Share them before publishing, without changing immutable reader records.
+		const event = JSON.parse(serialized) as ModelEvent;
+		event.model = this.shared(event.model); event.rawModel = this.shared(event.rawModel);
+		event.client = this.shared(event.client); event.upstream = this.shared(event.upstream);
+		event.status = this.shared(event.status); event.identity = this.shared(event.identity);
+		if (event.scope) event.scope = this.shared(event.scope);
+		for (const evidence of event.evidence) {
+			evidence.source = this.shared(evidence.source); evidence.kind = this.shared(evidence.kind);
+			if (evidence.id === event.id) evidence.id = event.id;
+		}
+		return this.immutable(event);
+	}
 	read() {
 		this.checkExternalWrites();
 		if (this.cachedRead) return this.cachedRead;
 		if (!this.loaded) {
 			for (const row of this.db.prepare("SELECT id,event FROM observations").iterate()) {
 				const previous = this.accepted.get(String(row.id)), serialized = String(row.event);
-				if (!previous || JSON.stringify(previous) !== serialized) this.accepted.set(String(row.id), this.immutable(JSON.parse(serialized)));
+				if (!previous || JSON.stringify(previous) !== serialized) {
+					const event = this.decode(serialized);
+					this.accepted.set(event.id === row.id ? event.id : String(row.id), event);
+				}
 			}
 			this.loaded = true; this.observations = undefined;
 		}

@@ -82,6 +82,49 @@
 .obs-range-group button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 5px 13px; border-radius: 4px; color: var(--obs-muted); font-size: 12px; white-space: nowrap; transition: background .15s, color .15s; }
 .obs-range-group button:hover { background: var(--obs-soft); color: var(--obs-ink); }
 .obs-range-group button.is-active { background: var(--obs-soft); color: var(--obs-ink); box-shadow: inset 0 1px 0 #ffffff0d, 0 1px 3px #00000014; font-weight: 550; }
+.obs-range-group .obs-custom-range { margin-left: 3px; border-left: 1px solid var(--obs-line); }
+.obs-date-editor { position: fixed; inset: auto; margin: 0; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); overflow: auto; padding: 20px; border: 1px solid var(--obs-border); border-radius: 12px; background: var(--obs-panel); color: var(--obs-ink); font-size: 12px; }
+.obs-date-editor::backdrop { background: transparent; }
+.obs-date-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.obs-date-heading strong { font-size: 14px; font-weight: 550; }
+.obs-date-heading .obs-icon-button { margin-right: -5px; }
+.obs-date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.obs-date-field { position: relative; min-width: 0; }
+.obs-date-field label { display: block; margin-bottom: 6px; color: var(--obs-muted); font-size: 11px; }
+.obs-date-field input { display: block; width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--obs-line); border-radius: 6px; background: var(--obs-panel); color: var(--obs-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.obs-date-field input.is-editing { border-color: var(--obs-ink); }
+.obs-date-field input:focus-visible { outline-offset: 2px; outline-width: 1px; }
+.obs-date-field input::placeholder { color: var(--obs-muted); }
+.obs-date-separator { position: absolute; left: -19px; bottom: 13px; color: var(--obs-muted); }
+.obs-calendar-heading { display: flex; align-items: center; justify-content: space-between; margin: 20px 0 12px; }
+.obs-calendar-heading > div { display: flex; align-items: center; gap: 3px; }
+.obs-calendar-heading input, .obs-calendar-heading select { border: 0; border-radius: 4px; background: transparent; padding: 4px 2px; font-size: 13px; font-weight: 550; color: var(--obs-ink); }
+.obs-calendar-heading input { width: 44px; appearance: textfield; text-align: right; }
+.obs-calendar-heading input::-webkit-inner-spin-button { appearance: none; }
+.obs-calendar-heading select { margin-left: 8px; cursor: pointer; }
+.obs-calendar-heading select option { background: var(--obs-bg); color: var(--obs-ink); }
+.obs-calendar-weekdays, .obs-calendar-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
+.obs-calendar-weekdays { margin-bottom: 5px; color: var(--obs-muted); font-size: 11px; line-height: 28px; }
+.obs-calendar-days { row-gap: 3px; }
+.obs-calendar-days button { position: relative; display: grid; place-items: center; min-width: 0; height: 36px; color: var(--obs-ink); font-size: 12px; }
+.obs-calendar-days button > span { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 6px; }
+.obs-calendar-days button.is-outside { color: var(--obs-muted); }
+.obs-calendar-days button.is-in-range { background: var(--obs-soft); }
+.obs-calendar-days button.is-start { border-radius: 6px 0 0 6px; }
+.obs-calendar-days button.is-end { border-radius: 0 6px 6px 0; }
+.obs-calendar-days button.is-today > span { box-shadow: inset 0 0 0 1px var(--obs-line); }
+.obs-calendar-days button:hover > span { background: var(--obs-accent); }
+.obs-calendar-days button:is(.is-start,.is-end) > span { background: var(--obs-ink); color: var(--obs-bg); font-weight: 600; box-shadow: none; }
+.obs-calendar-days button:focus-visible { outline-offset: -2px; border-radius: 6px; z-index: 1; }
+.obs-calendar-shortcuts { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 14px; color: var(--obs-muted); font-size: 11px; }
+.obs-calendar-shortcuts .obs-text-button { font-size: 11px; }
+.obs-date-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--obs-line); }
+.obs-date-footer > span { color: var(--obs-muted); font-size: 10px; }
+.obs-date-footer > div { display: flex; gap: 6px; margin-left: auto; }
+.obs-date-footer .obs-button { padding: 7px 11px; font-size: 11px; }
+.obs-date-footer .obs-date-apply { background: var(--obs-ink); border-color: var(--obs-ink); color: var(--obs-bg); }
+.obs-date-footer .obs-date-apply:hover:not(:disabled) { opacity: .85; }
+.obs-date-footer button:disabled { opacity: .45; cursor: not-allowed; }
 .obs-refresh-controls { display: flex; align-items: center; gap: 8px; }
 .obs-refresh-controls > span { font-size: 11px; color: var(--obs-muted); margin-right: 5px; }
 .obs-icon-button { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--obs-muted); transition: background .15s, color .15s; }
@@ -292,6 +335,8 @@
 	.obs-toolbar { padding-bottom: 14px; }
 	.obs-range-group { width: 100%; justify-content: space-between; }
 	.obs-range-group button { flex: 1; min-height: 36px; padding: 6px; font-size: 11px; gap: 4px; }
+	.obs-custom-range > svg:first-child { display: none; }
+	.obs-date-editor { padding: 16px; }
 	.obs-stat-strip { grid-template-columns: 1fr 1fr; padding: 18px 16px; gap: 18px 12px; }
 	.obs-stat-strip > div:first-child { grid-column: 1 / -1; padding-bottom: 16px; border-bottom: 1px solid var(--obs-line); }
 	.obs-stat-strip > div:nth-child(2) { border-left: 0; padding-left: 0; }

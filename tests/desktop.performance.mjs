@@ -43,6 +43,12 @@ try {
 	await page.getByTestId("request-total").waitFor({ timeout: 60000 });
 	const firstUiMs = performance.now() - started;
 	const origin = new URL(page.url()).origin;
+	// A fixed historical fixture may have no rows today. Measure the same full
+	// ledger on every run, independent of the current calendar date or defaults.
+	const fullRange = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/observatory" && new URL(response.url()).searchParams.get("range") === "all" && response.status() === 200);
+	await page.getByRole("button", { name: "全部", exact: true }).click();
+	await fullRange;
+	await page.locator('main[aria-busy="false"]').waitFor();
 	const query = async (range = "all") => {
 		const started = performance.now();
 		const response = await fetch(`${origin}/api/observatory?range=${range}`);
@@ -55,8 +61,12 @@ try {
 	const initial = (await query()).snapshot;
 	await page.getByRole("button", { name: "暂停实时刷新", exact: true }).click();
 	// Alternate ranges under normal cache reuse, including a collection cycle.
-	const queries = [];
-	for (let i = 0; i < 12; i++) { await sleep(1100); queries.push((await query(i % 2 ? "today" : "all")).ms); }
+	const queries = [], collectionTimes = new Set([initial.collection.collectedAt]);
+	for (let i = 0; i < 12; i++) {
+		await sleep(1100);
+		const result = await query(i % 2 ? "today" : "all");
+		queries.push(result.ms); collectionTimes.add(result.snapshot.collection.collectedAt);
+	}
 	await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.show(); if (w.isMinimized()) w.restore(); });
 	await page.getByRole("button", { name: "恢复实时刷新", exact: true }).click();
 	await sleep(3000);
@@ -98,7 +108,7 @@ try {
 		requestAnimationFrame(frame);
 	}));
 	const graphics = await app.evaluate(({ app }) => ({ hardwareAcceleration: app.isHardwareAccelerationEnabled(), features: app.getGPUFeatureStatus() }));
-	const result = { label, graphics, executable: path.resolve(executable), launchArgs, scroll, version: await app.evaluate(({ app }) => app.getVersion()), fixture: path.resolve(fixture), sourceFixture: existsSync(sources), initialRequests: initial.totals.requests, afterAppendRequests: afterAppend.snapshot.totals.requests, firstUiMs, queryMs: queries, queryMedianMs: median(queries), visible, requestView, hidden, collectionMs, afterAppendQueryMs: afterAppend.ms, restoreMs, testedAt: new Date().toISOString(), method: "Fixed metadata-only ledger and JSONL copy, plus optional fixture/sources logs; isolated home/profile; packaged EXEs; executable paths may differ; startup timings reported separately; 12 queries alternating all/today, reusing a snapshot until the ledger or time-window membership changes; 8 one-second samples per window state; four-second foreground scroll afterwards; no forced GC, memory caps or working-set trimming. Electron metrics are KiB; summed working sets may include shared pages." };
+	const result = { label, graphics, executable: path.resolve(executable), launchArgs, scroll, version: await app.evaluate(({ app }) => app.getVersion()), fixture: path.resolve(fixture), sourceFixture: existsSync(sources), initialRequests: initial.totals.requests, afterAppendRequests: afterAppend.snapshot.totals.requests, firstUiMs, queryMs: queries, queryMedianMs: median(queries), queryCollectionCommits: collectionTimes.size - 1, visible, requestView, hidden, collectionMs, afterAppendQueryMs: afterAppend.ms, restoreMs, testedAt: new Date().toISOString(), method: "Fixed metadata-only ledger and JSONL copy, plus optional fixture/sources logs; isolated home/profile; packaged EXEs; executable paths may differ; startup timings reported separately; 12 queries alternating all/today, reusing a snapshot until the ledger or time-window membership changes; 8 one-second samples per window state with all-history UI; four-second foreground scroll afterwards; no forced GC, memory caps or working-set trimming. Electron metrics are KiB; summed working sets may include shared pages." };
 	await mkdir(path.join(root, "logs", "performance"), { recursive: true });
 	await writeFile(path.join(root, "logs", "performance", label + ".json"), JSON.stringify(result, null, 2));
 	console.log(JSON.stringify({ label, firstUiMs, requests: initial.totals.requests, queryMedianMs: result.queryMedianMs, visiblePrivateMiB: visible.privateMiB, requestPrivateMiB: requestView.privateMiB, hiddenPrivateMiB: hidden.privateMiB, collectionMs, restoreMs, scroll }));

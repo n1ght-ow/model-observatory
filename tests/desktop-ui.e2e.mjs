@@ -66,7 +66,7 @@ async function verifyMonochrome() {
 	assert.deepEqual(colored, [], "all rendered surfaces, text, charts and status colors must be grayscale");
 }
 async function range(label) {
-	const ids = { "今天": "today", "24 小时": "24h", "7 天": "7d", "30 天": "30d", "全部": "all" };
+	const ids = { "今天": "today", "这周": "week", "这月": "month", "全部": "all" };
 	const response = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/observatory" && new URL(r.url()).searchParams.get("range") === ids[label] && r.status() === 200);
 	await page.getByRole("button", { name: label, exact: true }).click();
 	const data = await (await response).json();
@@ -117,10 +117,71 @@ try {
 	const modelBounds = await page.locator(".obs-model-table").boundingBox();
 	const chartBounds = await page.locator(".obs-activity-section").boundingBox();
 	assert.ok(modelBounds.y < chartBounds.y, "The model ledger must precede the activity chart");
-	for (const label of ["24 小时", "7 天", "30 天", "今天"]) {
+	for (const label of ["这周", "这月", "今天"]) {
 		const data = await range(label);
 		assert.ok(data.since && data.requests.every((row) => row.timeKnown !== false && row.at >= data.since));
 	}
+	await range("全部");
+	assert.deepEqual(await page.locator(".obs-range-group button").allTextContents(), ["今天", "这周", "这月", "全部", "任意时间"]);
+	const beforeDates = await page.locator(".obs-stat-strip").boundingBox();
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
+	const afterDates = await page.locator(".obs-stat-strip").boundingBox();
+	assert.ok(Math.abs(beforeDates.y - afterDates.y) < 1, "Opening the date popover must not shift the page");
+	assert.equal(await page.locator('.obs-date-editor input[type="date"]').count(), 0, "Use the themed range calendar, without the native date popup");
+	await page.getByLabel("开始日期", { exact: true }).fill("2026-10-14");
+	await page.getByLabel("结束日期", { exact: true }).fill("2026-10-12");
+	assert.equal(await page.getByRole("button", { name: "应用", exact: true }).isDisabled(), true);
+	await page.getByRole("alert").filter({ hasText: "开始日期不能晚于结束日期" }).waitFor();
+	await page.getByRole("button", { name: "取消", exact: true }).click();
+	assert.equal(new URL(page.url()).searchParams.get("range"), "all");
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
+	assert.equal(await page.locator(".obs-date-editor").count(), 0);
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
+	await page.getByRole("heading", { name: "模型总览", exact: true }).click();
+	assert.equal(await page.locator(".obs-date-editor").count(), 0, "Clicking outside dismisses without applying");
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
+	await page.getByLabel("年份", { exact: true }).fill("2026");
+	await page.getByLabel("月份", { exact: true }).selectOption("9");
+	await page.getByRole("button", { name: "2026年9月30日", exact: true }).click();
+	await page.getByRole("button", { name: "下个月", exact: true }).click();
+	await page.getByRole("button", { name: "2026年10月2日", exact: true }).click();
+	assert.equal(await page.getByLabel("开始日期", { exact: true }).inputValue(), "2026-09-30");
+	assert.equal(await page.getByLabel("结束日期", { exact: true }).inputValue(), "2026-10-02");
+	await page.getByRole("button", { name: "2026年10月12日", exact: true }).click();
+	await page.getByRole("button", { name: "2026年10月14日", exact: true }).click();
+	assert.equal(await page.locator(".obs-calendar-days .is-in-range").count(), 3);
+	await page.getByRole("button", { name: "2026年10月14日", exact: true }).press("ArrowRight");
+	await page.waitForFunction(() => document.activeElement?.getAttribute("data-date") === "2026-10-15");
+	assert.equal(await page.locator(":focus").getAttribute("data-date"), "2026-10-15");
+	await page.getByLabel("开始日期", { exact: true }).fill("2026-10-12");
+	await page.getByLabel("结束日期", { exact: true }).fill("2026-10-14");
+	const customResponse = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/observatory" && new URL(r.url()).searchParams.get("range") === "custom" && r.status() === 200);
+	await page.getByRole("button", { name: "应用", exact: true }).click();
+	const custom = await (await customResponse).json();
+	await waitData();
+	assert.equal(custom.since, "2026-10-11T16:00:00.000Z");
+	assert.equal(custom.until, "2026-10-14T16:00:00.000Z");
+	assert.equal(new URL(page.url()).searchParams.get("to"), "2026-10-14");
+	await page.reload({ waitUntil: "domcontentloaded" }); await waitData();
+	assert.equal(await page.getByRole("button", { name: "任意时间", exact: true }).getAttribute("aria-pressed"), "true");
+	await page.locator(".obs-model-name").first().click();
+	const drill = new URL(await page.getByRole("link", { name: /查看这个模型的请求/ }).getAttribute("href"), BASE);
+	assert.equal(drill.searchParams.get("from"), "2026-10-12");
+	await page.getByRole("link", { name: "请求流水", exact: true }).click(); await waitData();
+	const exportUrl = new URL(await page.getByRole("link", { name: "导出筛选结果" }).getAttribute("href"), BASE);
+	assert.equal(exportUrl.searchParams.get("range"), "custom");
+	assert.equal(exportUrl.searchParams.get("to"), "2026-10-14");
+	exportUrl.searchParams.delete("format");
+	const customRows = await (await fetch(`${BASE}/api/observatory?${exportUrl.searchParams}`)).json();
+	assert.equal(customRows.requestCount, custom.requestCount);
+	assert.ok(customRows.requests.every((r) => r.at >= custom.since && r.at < custom.until && r.timeKnown !== false));
+	await page.getByRole("link", { name: "接入与口径", exact: true }).click();
+	await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
+	await page.getByRole("link", { name: "模型总览", exact: true }).click(); await waitData();
+	assert.equal(new URL(page.url()).searchParams.get("from"), "2026-10-12");
+	for (const query of ["range=custom", "range=custom&from=2026-02-30&to=2026-03-01", "range=custom&from=2026-10-15&to=2026-10-14"]) assert.equal((await fetch(`${BASE}/api/observatory?${query}`)).status, 400);
+	record("任意日期校验、应用与取消、刷新、跨页、模型钻取和导出条件保留");
 	await range("全部");
 	await page.reload({ waitUntil: "domcontentloaded" });
 	await waitData();
@@ -155,7 +216,7 @@ try {
 	assert.equal(await page.getByTestId("request-total").count(), 0);
 	assert.equal(await page.locator(".obs-activity-section").count(), 0);
 	assert.equal(await page.getByRole("button", { name: "恢复实时刷新" }).count(), 1, "Refresh preference must survive navigation");
-	await range("7 天");
+	await range("这周");
 	await range("全部");
 	record("流水不重复汇总、模型钻取保留范围、暂停状态与流水时间筛选");
 
@@ -266,23 +327,34 @@ try {
 	record("全局采集暂停提示、320px 恢复入口、恢复失败保留历史与重试");
 
 	await mkdir("logs/desktop-ui-acceptance", { recursive: true });
-	await range("7 天");
+	await range("这周");
 	await verifyMonochrome();
 	await page.evaluate(() => scrollTo(0, 0));
 	await page.screenshot({ path: "logs/desktop-ui-acceptance/desktop.png" });
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
+	await page.screenshot({ path: "logs/desktop-ui-acceptance/date-range.png" });
 	await page.getByRole("button", { name: "切换深色" }).click();
 	assert.ok(await page.locator("html").evaluate((el) => el.classList.contains("dark")));
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
 	await verifyMonochrome();
 	await page.screenshot({ path: "logs/desktop-ui-acceptance/dark.png" });
 	await page.getByRole("button", { name: "切换浅色" }).click();
+	await page.getByRole("button", { name: "任意时间", exact: true }).click();
 	for (const width of [390, 320]) {
 		await resize({ width, height: 844 });
 		await page.screenshot({ path: `logs/desktop-ui-acceptance/${width === 390 ? "mobile" : "narrow"}.png` });
 		const size = await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: innerWidth }));
 		assert.ok(size.document <= size.viewport + 1, `${width}px viewport overflows to ${size.document}px`);
 		assert.ok(await page.getByRole("navigation", { name: "主导航" }).isVisible());
+		assert.ok(await page.getByLabel("开始日期", { exact: true }).isVisible());
+		const formSize = await page.locator(".obs-date-editor").evaluate((el) => ({ scroll: el.scrollWidth, width: el.clientWidth }));
+		assert.ok(formSize.scroll <= formSize.width + 1, `${width}px date editor overflows`);
+		const editor = await page.locator(".obs-date-editor").boundingBox();
+		assert.ok(editor.x >= 11 && editor.x + editor.width <= width - 11, `${width}px date popover exceeds viewport`);
 	}
 	await resize({ width: 1440, height: 1000 });
+	await page.getByLabel("开始日期", { exact: true }).press("Escape");
+	assert.equal(await page.locator(".obs-date-editor").count(), 0);
 	await page.getByRole("link", { name: "请求流水", exact: true }).click();
 	await waitData();
 	await page.screenshot({ path: "logs/desktop-ui-acceptance/requests.png" });

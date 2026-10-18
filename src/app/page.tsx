@@ -7,7 +7,7 @@ import Loading from "./loading";
 
 function Models() {
 	const params = useSearchParams();
-	return <Observatory view="models" initialRange={params.get("range") ?? ""} />;
+	return <Observatory view="models" initialRange={params.get("range") ?? ""} initialFrom={params.get("from") ?? ""} initialTo={params.get("to") ?? ""} />;
 }
 
 export default function Page() {

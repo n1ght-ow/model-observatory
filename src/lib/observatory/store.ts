@@ -7,6 +7,7 @@ import { collectObservations, releaseCommittedReaders } from "./readers";
 import { eventTimes, makeSnapshot, nextSnapshotChange, reconcile } from "./ledger";
 import type { ModelEvent, ObservatorySnapshot } from "./types";
 import { ObservationArchive } from "./archive";
+import type { CustomDates } from "./time-range";
 
 export const storeDir = process.env.OBSERVATORY_DATA_DIR ?? join(homedir(), ".model-observatory");
 
@@ -61,7 +62,7 @@ export async function collectNow(force = false) {
 	return collectionState();
 }
 export async function closeCollection() {
-	try { await pending; } finally { archive?.close(); archive = undefined; cachedLedger = undefined; snapshots.clear(); }
+	try { await pending; } finally { archive?.close(); archive = undefined; collectedThisSession = false; cachedLedger = undefined; snapshots.clear(); }
 }
 export async function setCollectionPaused(paused: boolean) {
 	history().setPaused(paused);
@@ -71,11 +72,15 @@ export async function setCollectionPaused(paused: boolean) {
 }
 let cachedLedger: { revision: number; observations: ModelEvent[]; aliases: string; ledger: ReturnType<typeof reconcile>; times: Float64Array } | undefined;
 const snapshots = new Map<string, { base: ReturnType<ObservationArchive["read"]>; until: number; snapshot: ObservatorySnapshot }>();
-export async function getSnapshot(range: string) {
+export async function getSnapshot(range: string, dates?: CustomDates) {
 	// Existing history is usable immediately, even while a cold scan catches up.
 	// An empty ledger still waits for its first collection before showing totals.
-	if (history().state().observations) void collectNow().catch(() => {});
-	else await collectNow();
+	// The desktop host owns the 15-second collection timer. Five-second UI
+	// polling must not start a second, faster schedule of full source scans.
+	if (!collectedThisSession) {
+		if (history().state().observations) void collectNow().catch(() => {});
+		else await collectNow();
+	}
 	let aliases: Record<string, string> = {};
 	try {
 		const parsed = JSON.parse(await readFile(join(storeDir, "aliases.json"), "utf8"));
@@ -91,11 +96,13 @@ export async function getSnapshot(range: string) {
 	}
 	// Rebuild only when the records, coverage, or the set of rows inside the
 	// time window would change. A fixed one-second expiry repeated the same sum.
-	let cached = snapshots.get(range);
+	const key = range === "custom" ? `${range}:${dates?.from}:${dates?.to}` : range;
+	let cached = snapshots.get(key);
 	if (!cached || cached.base !== base || !(now < cached.until)) {
-		const snapshot = makeSnapshot(base.observations, base.coverage, range, aliases, now, { ...cachedLedger.ledger, times: cachedLedger.times });
-		cached = { base, until: nextSnapshotChange(range, now, cachedLedger.ledger.events, cachedLedger.times), snapshot };
-		snapshots.set(range, cached);
+		const snapshot = makeSnapshot(base.observations, base.coverage, range, aliases, now, { ...cachedLedger.ledger, times: cachedLedger.times }, dates);
+		cached = { base, until: nextSnapshotChange(range, now, cachedLedger.ledger.events, cachedLedger.times, dates), snapshot };
+		if (snapshots.size >= 12) snapshots.delete(snapshots.keys().next().value!);
+		snapshots.set(key, cached);
 	}
 	return { ...cached.snapshot, collection: collectionState() };
 }

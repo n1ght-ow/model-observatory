@@ -1,17 +1,19 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Activity, ArrowDown, ArrowDownToLine, ArrowUpRight, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, Layers3, LockKeyhole, Moon, Pause, Play, Radio, RefreshCw, Search, Sun, X, Zap } from "lucide-react";
+import { Activity, ArrowDown, ArrowDownToLine, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, Layers3, LockKeyhole, Moon, Pause, Play, Radio, RefreshCw, Search, Sun, X, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/theme-provider";
 import { AliasEditor } from "./alias-editor";
+import { DateRangePicker } from "./date-range-picker";
+import { validCustomDates, type CustomDates } from "@/lib/observatory/time-range";
 import { modelVendor } from "@/lib/observatory/identity";
 import type { ModelSummary, ObservatorySnapshot, ModelEvent } from "@/lib/observatory/types";
 
 type View = "models" | "requests" | "coverage";
-const ranges = [{ id: "today", label: "今天" }, { id: "24h", label: "24 小时" }, { id: "7d", label: "7 天" }, { id: "30d", label: "30 天" }, { id: "all", label: "全部" }];
+const ranges = [{ id: "today", label: "今天" }, { id: "week", label: "这周" }, { id: "month", label: "这月" }, { id: "all", label: "全部" }, { id: "custom", label: "任意时间" }];
 const numberFormat = new Intl.NumberFormat("zh-CN"), compactFormat = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 });
 const number = (n: number) => numberFormat.format(n);
 const compact = (n: number) => compactFormat.format(n);
@@ -56,7 +58,7 @@ function ModelDetail({ model, range }: { model: ModelSummary; range: string }) {
 	return <div className="obs-model-detail">
 		<div><h4>这个模型从哪里来</h4><div className="obs-client-splits">{[...model.clients].sort((a, b) => b.requests - a.requests).map((c) => <div key={c.name}><span>{c.name}</span><div className="obs-mini-track"><i style={{ width: `${c.requests / model.requests * 100}%` }} /></div><strong>{number(c.requests)}</strong></div>)}</div></div>
 		<div><h4>归一前的名称</h4><div className="obs-aliases">{model.aliases.map((alias) => <code key={alias}>{alias}</code>)}</div><p>保留具体版本与变体，移除已识别的命名空间。</p>{model.configured > 0 && <p>{number(model.configured)} 条来自会话模型配置，未经响应模型验证。</p>}{model.turnRequests > 0 && <p>{number(model.turnRequests)} 条为会话请求轮次，内部多步调用未计数。</p>}</div>
-		<div><h4>上游 / 路由</h4><div className="obs-aliases">{model.upstreams.map((upstream) => <span key={upstream}>{upstream}</span>)}</div><Link className="obs-text-button" href={`/requests?model=${encodeURIComponent(model.model)}&range=${range}`}>查看这个模型的请求 <ArrowUpRight size={14} /></Link></div>
+		<div><h4>上游 / 路由</h4><div className="obs-aliases">{model.upstreams.map((upstream) => <span key={upstream}>{upstream}</span>)}</div><Link className="obs-text-button" href={`/requests?model=${encodeURIComponent(model.model)}&${range}`}>查看这个模型的请求 <ArrowUpRight size={14} /></Link></div>
 	</div>;
 }
 
@@ -118,11 +120,18 @@ function useSessionPreference(key: string, fallback: string) {
 	return [value, update] as const;
 }
 
-export function Observatory({ view = "models", initialModel = "", initialRange = "", initialClient = "" }: { view?: View; initialModel?: string; initialRange?: string; initialClient?: string }) {
+export function Observatory({ view = "models", initialModel = "", initialRange = "", initialFrom = "", initialTo = "", initialClient = "" }: { view?: View; initialModel?: string; initialRange?: string; initialFrom?: string; initialTo?: string; initialClient?: string }) {
 	const [savedRange, saveRange] = useSessionPreference("observatory-range", "today");
+	const [savedDates, saveDates] = useSessionPreference("observatory-dates", "");
 	const [pausedPreference, savePaused] = useSessionPreference("observatory-refresh-paused", "false");
 	const preferencesReady = useSyncExternalStore(subscribePreferences, () => true, () => false);
-	const range = ranges.some((r) => r.id === initialRange) ? initialRange : ranges.some((r) => r.id === savedRange) ? savedRange : "today";
+	const [savedFrom = "", savedTo = ""] = savedDates.split("/");
+	const from = initialRange === "custom" ? initialFrom : savedFrom, to = initialRange === "custom" ? initialTo : savedTo;
+	const preferredRange = initialRange || savedRange;
+	const range = ranges.some((r) => r.id === preferredRange) && (preferredRange !== "custom" || validCustomDates({ from, to })) ? preferredRange : "today";
+	const rangeParams = new URLSearchParams({ range, ...(range === "custom" ? { from, to } : {}) }).toString();
+	const [dateEditorOpen, setDateEditorOpen] = useState(false);
+	const customButton = useRef<HTMLButtonElement>(null);
 	const paused = pausedPreference === "true";
 	const [snapshot, setSnapshot] = useState<ObservatorySnapshot | null>(null);
 	const [error, setError] = useState(""), [busy, setBusy] = useState(true), [refresh, setRefresh] = useState(0);
@@ -130,7 +139,7 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 	const [query, setQuery] = useState(""), [modelFilter, setModelFilter] = useState(initialModel), [clientFilter, setClientFilter] = useState(initialClient), [page, setPage] = useState(0), [expanded, setExpanded] = useState<string | null>(null);
 	const [sort, setSort] = useState<"requests" | "tokens" | "latest">("requests"), [chartMetric, setChartMetric] = useState<"requests" | "tokens">("requests");
 	const { theme, toggleTheme } = useTheme();
-	const params = useMemo(() => new URLSearchParams({ range: view === "coverage" ? "all" : range, ...(view === "requests" ? { query, model: modelFilter, client: clientFilter, page: String(page) } : { limit: "0" }) }).toString(), [range, query, modelFilter, clientFilter, page, view]);
+	const params = useMemo(() => new URLSearchParams({ ...(view === "coverage" ? { range: "all" } : Object.fromEntries(new URLSearchParams(rangeParams))), ...(view === "requests" ? { query, model: modelFilter, client: clientFilter, page: String(page) } : { limit: "0" }) }).toString(), [rangeParams, query, modelFilter, clientFilter, page, view]);
 	useEffect(() => {
 		if (!preferencesReady) return;
 		let controller: AbortController | undefined;
@@ -148,10 +157,10 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 				const data = await response.json() as ObservatorySnapshot;
 				if (active) {
 					if (view !== "coverage") {
-						try { sessionStorage.setItem("observatory-range", range); } catch { /* The URL still retains the range. */ }
+						try { sessionStorage.setItem("observatory-range", range); if (range === "custom") sessionStorage.setItem("observatory-dates", `${from}/${to}`); } catch { /* The URL still retains the range. */ }
 					}
 					setSnapshot((previous) => {
-						if (!previous || previous.generatedAt !== data.generatedAt || previous.range !== data.range || previous.requestCount !== data.requestCount || previous.requests.length !== data.requests.length || previous.requests[0]?.id !== data.requests[0]?.id || previous.requests.at(-1)?.id !== data.requests.at(-1)?.id || previous.totals.requests !== data.totals.requests || previous.totals.input !== data.totals.input || previous.totals.output !== data.totals.output || previous.totals.cache !== data.totals.cache || previous.models.length !== data.models.length || previous.models[0]?.model !== data.models[0]?.model || previous.activity.length !== data.activity.length) return data;
+						if (!previous || previous.generatedAt !== data.generatedAt || previous.range !== data.range || previous.since !== data.since || previous.until !== data.until || previous.requestCount !== data.requestCount || previous.requests.length !== data.requests.length || previous.requests[0]?.id !== data.requests[0]?.id || previous.requests.at(-1)?.id !== data.requests.at(-1)?.id || previous.totals.requests !== data.totals.requests || previous.totals.input !== data.totals.input || previous.totals.output !== data.totals.output || previous.totals.cache !== data.totals.cache || previous.models.length !== data.models.length || previous.models[0]?.model !== data.models[0]?.model || previous.activity.length !== data.activity.length) return data;
 						if (previous.collection?.collectedAt === data.collection?.collectedAt && previous.collection?.collecting === data.collection?.collecting && previous.collection?.paused === data.collection?.paused && previous.collection?.error === data.collection?.error && previous.collection?.observations === data.collection?.observations) return previous;
 						return { ...previous, collection: data.collection };
 					});
@@ -170,7 +179,7 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 		if (desktop) void desktop.isVisible().then((value) => { if (!visibilityEvents) desktopVisible = value; visibilityKnown = true; void load(); }, () => { visibilityKnown = true; void load(); });
 		else void load();
 		return () => { active = false; controller?.abort(); clearTimeout(timer); unsubscribe?.(); document.removeEventListener("visibilitychange", visibilityChanged); };
-	}, [params, paused, refresh, preferencesReady, range, view]);
+	}, [params, paused, refresh, preferencesReady, range, from, to, view]);
 	const modelRows = useMemo(() => (snapshot?.models ?? []).filter((r) => `${r.model} ${r.clients.map((c) => c.name).join(" ")} ${r.aliases.join(" ")}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => sort === "requests" ? b.requests - a.requests : sort === "tokens" ? (b.input + b.output) - (a.input + a.output) : b.latest.localeCompare(a.latest)), [snapshot, query, sort]);
 	const allClients = useMemo(() => { const result = new Map<string, number>(); for (const m of snapshot?.models ?? []) for (const c of m.clients) result.set(c.name, (result.get(c.name) ?? 0) + c.requests); return [...result].sort((a, b) => b[1] - a[1]); }, [snapshot]);
 	const total = snapshot?.totals;
@@ -189,15 +198,21 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 		} catch { setError("恢复采集失败。请重试，已保存的历史不受影响。"); }
 		finally { setResuming(false); }
 	}
-	function chooseRange(value: string) {
+	const closeDateEditor = useCallback(() => { setDateEditorOpen(false); customButton.current?.focus(); }, []);
+	function chooseRange(value: string, dates?: CustomDates) {
+		if (dates) saveDates(`${dates.from}/${dates.to}`);
 		saveRange(value); setPage(0);
+		setDateEditorOpen(false);
 		// Keep reloads and copied links consistent with the visible range.
 		const url = new URL(window.location.href);
 		url.searchParams.set("range", value);
+		url.searchParams.delete("from"); url.searchParams.delete("to");
+		if (dates) { url.searchParams.set("from", dates.from); url.searchParams.set("to", dates.to); }
 		window.history.replaceState(null, "", url);
 	}
-	const overviewHref = `/?range=${range}`, requestsHref = `/requests?range=${range}`;
-	const rangeDescription = error && snapshot?.range !== range ? "所选范围读取失败 · 保留上次结果" : busy || snapshot?.range !== range ? "正在加载所选范围…" : snapshot?.since ? `北京时间 · ${clock(snapshot.since, true)} 起` : "全部历史 · 包含时间未记录的请求";
+	const overviewHref = `/?${rangeParams}`, requestsHref = `/requests?${rangeParams}`;
+	const rangeMatches = snapshot?.range === range && (range !== "custom" || (snapshot.since === new Date(`${from}T00:00:00+08:00`).toISOString() && snapshot.until === new Date(Date.parse(`${to}T00:00:00+08:00`) + 86_400_000).toISOString()));
+	const rangeDescription = error && !rangeMatches ? "所选范围读取失败 · 保留上次结果" : busy || !rangeMatches ? "正在加载所选范围…" : range === "custom" ? `北京时间 · ${from.replaceAll("-", "/")} — ${to.replaceAll("-", "/")} · 含起止当天` : snapshot?.since ? `北京时间 · ${clock(snapshot.since, true)} 起${range === "week" ? "（周一）" : ""}` : "全部历史 · 包含时间未记录的请求";
 	return <div className="observatory">
 		<aside className="obs-sidebar">
 			<Link href={overviewHref} className="obs-brand" aria-label="Model Observatory 首页"><span className="obs-brand-icon"><Image src="/app.ico?v=silver-orbit-1" width={39} height={39} alt="" unoptimized /></span><span>Model<span>Observatory</span></span></Link>
@@ -215,7 +230,7 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 		</header>
 		<main className="obs-main" aria-busy={busy}>
 		<div className="obs-page-heading"><h1>{titles[view]}</h1>{view === "requests" && <a className="obs-button" href={`/api/observatory?${params}&format=csv`} download><ArrowDownToLine size={15} />导出筛选结果</a>}</div>
-		{view !== "coverage" && <div className="obs-toolbar"><div className="obs-range-group" aria-label="时间范围">{ranges.map((r) => <button key={r.id} aria-pressed={range === r.id} className={cn(range === r.id && "is-active")} onClick={() => chooseRange(r.id)}>{r.label}</button>)}</div><span className="obs-range-description">{rangeDescription}</span></div>}
+		{view !== "coverage" && <div className="obs-toolbar"><div className="obs-range-group" role="group" aria-label="时间范围">{ranges.map((r) => <button key={r.id} ref={r.id === "custom" ? customButton : undefined} aria-pressed={range === r.id} aria-expanded={r.id === "custom" ? dateEditorOpen : undefined} aria-controls={r.id === "custom" ? "obs-custom-dates" : undefined} aria-haspopup={r.id === "custom" ? "dialog" : undefined} className={cn(range === r.id && "is-active", r.id === "custom" && "obs-custom-range")} onClick={() => r.id === "custom" ? setDateEditorOpen(!dateEditorOpen) : chooseRange(r.id)}>{r.id === "custom" && <CalendarDays size={13} aria-hidden="true" />}{r.label}{r.id === "custom" && <ChevronDown size={12} className={cn(dateEditorOpen && "obs-rotated")} aria-hidden="true" />}</button>)}</div><span className="obs-range-description">{rangeDescription}</span>{dateEditorOpen && <DateRangePicker anchor={customButton} dates={validCustomDates({ from, to }) ? { from, to } : undefined} onClose={closeDateEditor} onApply={(dates) => { chooseRange("custom", dates); customButton.current?.focus(); }} />}</div>}
 
 		{snapshot?.collection?.paused && <div className="obs-error-banner" role="status"><span>采集已暂停，历史已保留。恢复后补读暂停期间的原始记录。</span><button disabled={resuming} onClick={resumeCollection}>{resuming ? "补读中…" : "恢复采集"}<Play size={13} /></button></div>}
 		{error && <div className="obs-error-banner" role="alert">{error}<button onClick={() => setRefresh((n) => n + 1)}>重试 <RefreshCw size={13} /></button></div>}
@@ -223,7 +238,7 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 		{view === "models" && <section className="obs-stat-strip" aria-label="模型统计"><div><span><Activity size={14} aria-hidden="true" />已观测请求</span><strong data-testid="request-total">{number(total!.requests)}<small>次</small></strong>{total!.turnRequests > 0 && <p>含 {number(total!.turnRequests)} 轮会话请求，非底层调用总数</p>}</div><div><span><Zap size={14} aria-hidden="true" />已记录 Token</span><strong>{total!.inputRequests || total!.outputRequests ? compact(total!.input + total!.output) : "未记录"}</strong><p>输入 {tokens(total!.inputRequests ? total!.input : null)} <span>/</span> 输出 {tokens(total!.outputRequests ? total!.output : null)}</p>{total!.tokenRequests < total!.requests && <p>{number(total!.tokenRequests)}/{number(total!.requests)} 条完整用量</p>}</div><div><span><Layers3 size={14} aria-hidden="true" />已记录缓存读取</span><strong>{total!.cacheRequests ? compact(total!.cache) : "未记录"}</strong><p>已包含在输入中，不重复相加</p>{total!.cacheRequests < total!.requests && <p>{number(total!.cacheRequests)}/{number(total!.requests)} 条报告缓存</p>}</div></section>}
 
 		<div className="obs-ledger-heading"><div><h2>{view === "models" ? "模型账本" : modelFilter || clientFilter || query ? "筛选结果" : "请求记录"}</h2><span>{number(view === "models" ? modelRows.length : snapshot.requestCount)} {view === "models" ? "个模型" : "条记录"}</span></div><label className="obs-search"><Search size={15} /><input aria-label={view === "models" ? "搜索模型或工具" : "搜索请求"} placeholder={view === "models" ? "搜索模型、工具…" : "搜索模型、工具、路由…"} value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }} />{query && <button aria-label="清除搜索" onClick={() => setQuery("")}><X size={13} /></button>}</label></div>
-		{view === "models" ? <><div className="obs-table-scroll"><table className="obs-table obs-model-table"><thead><tr><th>模型</th><th><button className={cn(sort === "requests" && "is-sorted")} onClick={() => setSort("requests")}>请求数 <ArrowDown size={12} /></button></th><th><button className={cn(sort === "tokens" && "is-sorted")} onClick={() => setSort("tokens")}>Token <ArrowDown size={12} /></button></th><th className="obs-optional">来自工具</th><th className="obs-optional"><button className={cn(sort === "latest" && "is-sorted")} onClick={() => setSort("latest")}>最近调用 <ArrowDown size={12} /></button></th><th><span className="sr-only">展开模型</span></th></tr></thead><tbody>{modelRows.map((model) => <Fragment key={model.model}><tr className={cn(expanded === model.model && "obs-row-selected")}><td><button className="obs-model-name" aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><span className="obs-model-mark">{modelVendor(model.model).slice(0, 1)}</span><span><strong>{model.model}</strong><span>{modelVendor(model.model)}</span>{model.configured > 0 && <span className="obs-identity-label">{model.configured === model.requests ? "配置模型" : "含配置模型"}</span>}</span></button></td><td className="obs-numeric"><strong>{number(model.requests)}</strong><div className="obs-usage-track"><i style={{ width: `${model.requests / Math.max(1, total!.requests) * 100}%` }} /></div></td><td className="obs-numeric"><ModelUsage model={model} /></td><td className="obs-optional"><div className="obs-client-badges">{model.clients.slice(0, 2).map((client) => <span key={client.name}>{client.name}</span>)}{model.clients.length > 2 && <span>+{model.clients.length - 2}</span>}</div></td><td className="obs-optional obs-time">{clock(model.latest)}</td><td><button className="obs-icon-button" aria-label={`展开 ${model.model}`} aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><ChevronDown size={15} className={cn(expanded === model.model && "obs-rotated")} /></button></td></tr>{expanded === model.model && <tr className="obs-expanded-row"><td colSpan={6}><ModelDetail model={model} range={range} /></td></tr>}</Fragment>)}</tbody></table>{!modelRows.length && <Empty title={query ? "没有匹配的模型" : "还没有模型活动"} text={query ? "试试模型名称的一部分，或搜索工具名称。" : "选择更长的时间范围，或检查数据接入。"} />}</div><section className="obs-chart-section obs-activity-section"><div className="obs-section-heading"><h2>调用活动</h2><div className="obs-small-toggle"><button className={cn(chartMetric === "requests" && "is-active")} onClick={() => setChartMetric("requests")}>请求</button><button className={cn(chartMetric === "tokens" && "is-active")} onClick={() => setChartMetric("tokens")}>Token</button></div></div><ActivityChart points={snapshot.activity} metric={chartMetric} /></section></> : <><div className="obs-request-filters"><label>模型<select aria-label="按模型筛选" value={modelFilter} onChange={(e) => { setModelFilter(e.target.value); setPage(0); }}><option value="">全部模型</option>{snapshot.models.map((r) => <option key={r.model}>{r.model}</option>)}</select></label><label>工具<select aria-label="按工具筛选" value={clientFilter} onChange={(e) => { setClientFilter(e.target.value); setPage(0); }}><option value="">全部工具</option>{allClients.map(([name]) => <option key={name}>{name}</option>)}</select></label>{(modelFilter || clientFilter || query) && <button className="obs-text-button" onClick={() => { setModelFilter(""); setClientFilter(""); setQuery(""); setPage(0); }}>清除筛选 <X size={13} /></button>}</div><RequestRows rows={snapshot.requests} /><div className="obs-pagination"><span>{snapshot.requestCount ? `${number(page * 50 + 1)}–${number(Math.min((page + 1) * 50, snapshot.requestCount))}` : "0"} / {number(snapshot.requestCount)} 条</span><div><button className="obs-button" disabled={page === 0} onClick={() => setPage(page - 1)}><ChevronLeft size={14} />上一页</button><button className="obs-button" disabled={(page + 1) * 50 >= snapshot.requestCount} onClick={() => setPage(page + 1)}>下一页<ChevronRight size={14} /></button></div></div></>}
+		{view === "models" ? <><div className="obs-table-scroll"><table className="obs-table obs-model-table"><thead><tr><th>模型</th><th><button className={cn(sort === "requests" && "is-sorted")} onClick={() => setSort("requests")}>请求数 <ArrowDown size={12} /></button></th><th><button className={cn(sort === "tokens" && "is-sorted")} onClick={() => setSort("tokens")}>Token <ArrowDown size={12} /></button></th><th className="obs-optional">来自工具</th><th className="obs-optional"><button className={cn(sort === "latest" && "is-sorted")} onClick={() => setSort("latest")}>最近调用 <ArrowDown size={12} /></button></th><th><span className="sr-only">展开模型</span></th></tr></thead><tbody>{modelRows.map((model) => <Fragment key={model.model}><tr className={cn(expanded === model.model && "obs-row-selected")}><td><button className="obs-model-name" aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><span className="obs-model-mark">{modelVendor(model.model).slice(0, 1)}</span><span><strong>{model.model}</strong><span>{modelVendor(model.model)}</span>{model.configured > 0 && <span className="obs-identity-label">{model.configured === model.requests ? "配置模型" : "含配置模型"}</span>}</span></button></td><td className="obs-numeric"><strong>{number(model.requests)}</strong><div className="obs-usage-track"><i style={{ width: `${model.requests / Math.max(1, total!.requests) * 100}%` }} /></div></td><td className="obs-numeric"><ModelUsage model={model} /></td><td className="obs-optional"><div className="obs-client-badges">{model.clients.slice(0, 2).map((client) => <span key={client.name}>{client.name}</span>)}{model.clients.length > 2 && <span>+{model.clients.length - 2}</span>}</div></td><td className="obs-optional obs-time">{clock(model.latest)}</td><td><button className="obs-icon-button" aria-label={`展开 ${model.model}`} aria-expanded={expanded === model.model} onClick={() => setExpanded(expanded === model.model ? null : model.model)}><ChevronDown size={15} className={cn(expanded === model.model && "obs-rotated")} /></button></td></tr>{expanded === model.model && <tr className="obs-expanded-row"><td colSpan={6}><ModelDetail model={model} range={rangeParams} /></td></tr>}</Fragment>)}</tbody></table>{!modelRows.length && <Empty title={query ? "没有匹配的模型" : "还没有模型活动"} text={query ? "试试模型名称的一部分，或搜索工具名称。" : "选择更长的时间范围，或检查数据接入。"} />}</div><section className="obs-chart-section obs-activity-section"><div className="obs-section-heading"><h2>调用活动</h2><div className="obs-small-toggle"><button className={cn(chartMetric === "requests" && "is-active")} onClick={() => setChartMetric("requests")}>请求</button><button className={cn(chartMetric === "tokens" && "is-active")} onClick={() => setChartMetric("tokens")}>Token</button></div></div><ActivityChart points={snapshot.activity} metric={chartMetric} /></section></> : <><div className="obs-request-filters"><label>模型<select aria-label="按模型筛选" value={modelFilter} onChange={(e) => { setModelFilter(e.target.value); setPage(0); }}><option value="">全部模型</option>{snapshot.models.map((r) => <option key={r.model}>{r.model}</option>)}</select></label><label>工具<select aria-label="按工具筛选" value={clientFilter} onChange={(e) => { setClientFilter(e.target.value); setPage(0); }}><option value="">全部工具</option>{allClients.map(([name]) => <option key={name}>{name}</option>)}</select></label>{(modelFilter || clientFilter || query) && <button className="obs-text-button" onClick={() => { setModelFilter(""); setClientFilter(""); setQuery(""); setPage(0); }}>清除筛选 <X size={13} /></button>}</div><RequestRows rows={snapshot.requests} /><div className="obs-pagination"><span>{snapshot.requestCount ? `${number(page * 50 + 1)}–${number(Math.min((page + 1) * 50, snapshot.requestCount))}` : "0"} / {number(snapshot.requestCount)} 条</span><div><button className="obs-button" disabled={page === 0} onClick={() => setPage(page - 1)}><ChevronLeft size={14} />上一页</button><button className="obs-button" disabled={(page + 1) * 50 >= snapshot.requestCount} onClick={() => setPage(page + 1)}>下一页<ChevronRight size={14} /></button></div></div></>}
 		</>}
 		</main></div>
 	</div>;

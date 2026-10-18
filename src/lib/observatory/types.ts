@@ -56,6 +56,7 @@ export type ObservatorySnapshot = {
 	generatedAt: string;
 	range: string;
 	since: string | null;
+	until: string | null;
 	totals: { requests: number; turnRequests: number; input: number; output: number; cache: number; inputRequests: number; outputRequests: number; cacheRequests: number; models: number; clients: number; errors: number; tokenRequests: number };
 	models: ModelSummary[];
 	activity: { at: string; requests: number; tokens: number }[];

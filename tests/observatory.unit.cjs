@@ -12,12 +12,43 @@ require.extensions[".ts"] = (module, file) => {
 };
 const { normalizeModel } = require("../src/lib/observatory/identity.ts");
 const { reconcile, makeSnapshot, eventTimes, nextSnapshotChange } = require("../src/lib/observatory/ledger.ts");
+const { timeBounds, validCustomDates } = require("../src/lib/observatory/time-range.ts");
 const { scanJsonl, releaseCommittedJsonl } = require("../src/lib/observatory/jsonl.ts");
 const { readDshSessionFile, releaseCommittedDsh } = require("../src/lib/observatory/sources/dsh.ts");
 const { ObservationArchive } = require("../src/lib/observatory/archive.ts");
 const now = Date.parse("2026-10-14T06:00:00Z");
 const row = (id, changes = {}) => ({ id, at: "2026-10-14T05:00:00Z", model: "gpt-6.1-sol", rawModel: "gpt-6.1-sol", client: "Codex", upstream: "未记录", input: 1000, output: 100, cache: 500, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source: "codex", kind: "session" }], ...changes });
 const route = (id, changes = {}) => row(id, { rawModel: "openai/gpt-6.1-sol", client: "未识别工具", upstream: "openai", evidence: [{ id, source: "router", kind: "router" }], ...changes });
+
+test("calendar ranges use Beijing Monday/month boundaries and expire at rollover", () => {
+	const sunday = Date.parse("2026-11-01T15:59:59.999Z"), monday = sunday + 1;
+	assert.equal(new Date(timeBounds("week", sunday).since).toISOString(), "2026-10-25T16:00:00.000Z");
+	assert.equal(new Date(timeBounds("week", monday).since).toISOString(), "2026-11-01T16:00:00.000Z");
+	assert.equal(new Date(timeBounds("month", sunday).since).toISOString(), "2026-10-31T16:00:00.000Z");
+	assert.equal(timeBounds("month", Date.parse("2026-10-31T15:59:59Z")).until, Date.parse("2026-10-31T16:00:00Z"));
+	for (const range of ["week", "month"]) {
+		const bounds = timeBounds(range, sunday);
+		const rows = [row("before", { at: new Date(bounds.since - 1).toISOString() }), row("start", { at: new Date(bounds.since).toISOString() }), row("current", { at: new Date(sunday).toISOString() }), row("future", { at: new Date(sunday + 1).toISOString() }), row("unknown", { timeKnown: false })];
+		assert.deepEqual(makeSnapshot(rows, [], range, {}, sunday).requests.map((r) => r.id), ["current", "start"]);
+		assert.equal(nextSnapshotChange(range, sunday, [], new Float64Array()), bounds.until);
+	}
+});
+
+test("custom dates include both days, exclude unknown/future time and bound activity", () => {
+	for (const dates of [{ from: "2026-02-30", to: "2026-03-01" }, { from: "2026-10-15", to: "2026-10-14" }, { from: "", to: "2026-10-14" }]) assert.equal(validCustomDates(dates), false);
+	assert.equal(validCustomDates({ from: "2024-02-29", to: "2024-02-29" }), true);
+	const dates = { from: "2026-10-12", to: "2026-10-13" };
+	const rows = [row("before", { at: "2026-10-11T15:59:59.999Z" }), row("first", { at: "2026-10-11T16:00:00Z" }), row("last", { at: "2026-10-13T15:59:59.999Z" }), row("after", { at: "2026-10-13T16:00:00Z" }), row("unknown", { timeKnown: false })];
+	const prepared = reconcile(rows), times = eventTimes(prepared.events);
+	const snapshot = makeSnapshot(rows, [], "custom", {}, now, { ...prepared, times }, dates);
+	assert.deepEqual(snapshot.requests.map((r) => r.id), ["first", "last"]);
+	assert.equal(snapshot.until, "2026-10-13T16:00:00.000Z");
+	assert.equal(snapshot.activity.reduce((n, p) => n + p.requests, 0), 2);
+	assert.ok(snapshot.activity.every((p) => p.at < snapshot.until));
+	assert.equal(nextSnapshotChange("custom", now, rows, eventTimes(rows), dates), Infinity);
+	assert.equal(makeSnapshot(rows, [], "custom", {}, Date.parse("2026-10-12T00:00:00Z"), undefined, dates).totals.requests, 1);
+	assert.ok(makeSnapshot(rows, [], "custom", {}, now, undefined, { from: "1900-01-01", to: "9999-12-31" }).activity.length <= 121);
+});
 
 test("archive caches remain correct after unchanged replay, revised usage and another connection's WAL commit", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "observatory-cache-"));
@@ -84,6 +115,27 @@ test("reconciliation does not mutate shared observations through aliases, revisi
 	assert.equal(rows[3].model, "separate-model");
 });
 
+test("reopened archives share bounded metadata without changing names or immutable evidence", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "observatory-metadata-"));
+	const file = join(dir, "history.sqlite");
+	const rows = Array.from({ length: 2200 }, (_, index) => row(`metadata-${index}`, {
+		model: `模型-${index}`, rawModel: `模型-${index}`, client: `工具-${index}`, upstream: "共享路由",
+		evidence: [{ id: `metadata-${index}`, source: "共享来源", kind: "session" }],
+	}));
+	let archive = new ObservationArchive(file);
+	try {
+		archive.commit(rows, []); archive.close();
+		archive = new ObservationArchive(file);
+		const loaded = archive.read().observations;
+		assert.deepEqual(loaded, rows);
+		assert.ok(archive.strings.size <= 2048, "Unique metadata must not grow the shared-string pool without a bound");
+		assert.ok(loaded.every((event) => Object.isFrozen(event) && Object.isFrozen(event.evidence) && Object.isFrozen(event.evidence[0])));
+		archive.commit([row("metadata-0", { model: "修订模型", rawModel: "修订模型", output: 999 })], []);
+		assert.equal(loaded[0].model, "模型-0");
+		assert.equal(archive.read().observations[0].model, "修订模型");
+	} finally { archive.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("prepared ledger matches fresh snapshots across ranges, advancing time and aliases", () => {
 	const rows = [row("boundary", { at: new Date(now - 86_400_000 + 1).toISOString() }), row("now"), route("r"), row("unknown", { timeKnown: false })];
 	for (const aliases of [{}, { "gpt-6.1-sol": "renamed-model" }]) {
@@ -116,12 +168,45 @@ test("saved history is readable during slow catch-up, then refreshes after commi
 			assert.equal((await store.getSnapshot('all')).totals.requests,2);
 			const warm=await store.getSnapshot('all');
 			assert.equal((await store.getSnapshot('all')).generatedAt, warm.generatedAt);
+			const day={from:'2026-10-14',to:'2026-10-14'}, empty={from:'2026-10-01',to:'2026-10-01'};
+			assert.equal((await store.getSnapshot('custom',day)).totals.requests,2);
+			assert.equal((await store.getSnapshot('custom',empty)).totals.requests,0);
+			assert.equal((await store.getSnapshot('custom',day)).totals.requests,2,'Custom cache keys must include both dates');
 			fs.writeFileSync(path.join(process.env.OBSERVATORY_DATA_DIR,'aliases.json'),JSON.stringify({'gpt-6.1-sol':'fixture-renamed'}));
 			assert.equal((await store.getSnapshot('all')).models[0].model,'fixture-renamed');
 			await store.setCollectionPaused(true); assert.equal((await store.getSnapshot('all')).collection.paused,true);
 		})().catch(e=>{console.error(e);process.exitCode=1});`;
 	try {
 		execFileSync(process.execPath, ["-e", worker, "unused", JSON.stringify([row("saved"), row("new")])], { cwd: process.cwd(), env: { ...process.env, OBSERVATORY_DATA_DIR: dir }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 });
+	} finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("UI polling never reschedules source scans; explicit collection and reopening still catch up", async () => {
+	const { execFileSync } = require("node:child_process");
+	const dir = await mkdtemp(join(tmpdir(), "observatory-schedule-"));
+	const worker = `const fs=require('node:fs'),ts=require('typescript'),assert=require('node:assert/strict');
+		require.extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(fs.readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,f);
+		let scans=0; const rows=JSON.parse(process.argv[2]), now=Date.now;
+		require('./src/lib/observatory/readers.ts').collectObservations=async()=>{scans++;return {observations:rows,coverage:[]}};
+		const store=require('./src/lib/observatory/store.ts');
+		(async()=>{try{
+			await store.collectNow(true);
+			assert.equal((await store.getSnapshot('all')).totals.requests,1);
+			Date.now=()=>now()+5000;
+			rows.push({...rows[0],id:'next',evidence:[{...rows[0].evidence[0],id:'next'}]});
+			for(const range of ['all','today','week','all'])await store.getSnapshot(range);
+			assert.equal(scans,1,'View polling and range changes must leave collection to the desktop timer');
+			await store.collectNow();
+			assert.equal(scans,2);assert.equal((await store.getSnapshot('all')).totals.requests,2);
+			await store.closeCollection();
+			Date.now=now;
+			rows.push({...rows[0],id:'reopen',evidence:[{...rows[0].evidence[0],id:'reopen'}]});
+			await store.getSnapshot('all');await store.collectNow();
+			assert.equal(scans,3,'Reopening must not suppress cold catch-up');
+			assert.equal((await store.getSnapshot('all')).totals.requests,3);
+		}finally{Date.now=now;await store.closeCollection();}})().catch(e=>{console.error(e);process.exitCode=1});`;
+	try {
+		execFileSync(process.execPath, ["-e", worker, "unused", JSON.stringify([row("initial")])], { cwd: process.cwd(), env: { ...process.env, USERPROFILE: dir, HOME: dir, APPDATA: dir, OBSERVATORY_DATA_DIR: dir }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 });
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
