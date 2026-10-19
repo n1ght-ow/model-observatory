@@ -35,8 +35,13 @@ const tokens = (n: number | null) => n === null ? "—" : compact(n);
 const timeOptions: Intl.DateTimeFormatOptions = { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
 const timeFormat = new Intl.DateTimeFormat("zh-CN", timeOptions);
 const dateTimeFormat = new Intl.DateTimeFormat("zh-CN", { ...timeOptions, month: "2-digit", day: "2-digit" });
-const axisTimeFormat = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", hour12: false });
 const periodTimeFormat = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+const shortTimeFormat = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
+const chartDateFormat = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
+function activityPeriod(at: string, until: string) {
+	const start = new Date(at), end = new Date(until);
+	return `${periodTimeFormat.format(start)} – ${chartDateFormat.format(start) === chartDateFormat.format(end) ? shortTimeFormat.format(end) : periodTimeFormat.format(end)}`;
+}
 const clock = (at: string, date = false) => !at ? "时间未记录" : (date ? dateTimeFormat : timeFormat).format(new Date(at));
 
 function Empty({ title, text }: { title: string; text: string }) {
@@ -58,46 +63,58 @@ function ActivityChart({ points, metric }: { points: ObservatorySnapshot["activi
 	const chart = useRef<HTMLDivElement>(null), tooltip = useRef<HTMLDivElement>(null);
 	const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const tooltipId = useId();
-	const max = Math.max(1, ...points.map((p) => p[metric]));
-	const count = Math.max(1, points.length), step = 850 / count;
+	const peak = Math.max(1, ...points.map((p) => p[metric]));
+	const scale = 10 ** Math.max(0, Math.floor(Math.log10(peak)) - 1);
+	const max = Math.ceil(Math.ceil(peak / scale) * scale / 2) * 2;
+	const count = Math.max(1, points.length), step = 1000 / count;
+	const barWidth = Math.min(18, step * .6);
 	const visible = hover === null ? null : points[hover];
 	const models = visible ? [...visible.models].sort((a, b) => metric === "requests" ? b.requests - a.requests || a.model.localeCompare(b.model) : (b.input + b.output) - (a.input + a.output) || b.requests - a.requests || a.model.localeCompare(b.model)) : [];
 	const recorded = models.some((m) => m.inputRequests > 0 || m.outputRequests > 0);
-	const complete = models.reduce((sum, m) => sum + m.tokenRequests, 0);
 	function keepOpen() { if (leaveTimer.current) clearTimeout(leaveTimer.current); }
 	function show(index: number) { keepOpen(); setHover(index); }
 	useEffect(() => () => { if (leaveTimer.current) clearTimeout(leaveTimer.current); }, []);
 	useLayoutEffect(() => {
 		if (!visible) return;
 		function dismiss(event: KeyboardEvent) { if (event.key === "Escape") { keepOpen(); setHover(null); } }
+		function dismissOutside(event: PointerEvent) { if (!chart.current?.contains(event.target as Node)) { keepOpen(); setHover(null); } }
 		function place() {
 			const anchor = chart.current?.querySelectorAll(".obs-chart-period")[hover!]?.getBoundingClientRect();
 			const panel = tooltip.current?.getBoundingClientRect();
-			if (!anchor || !panel) return;
-			const left = Math.max(16, Math.min(anchor.left + anchor.width / 2 - panel.width / 2, innerWidth - panel.width - 16));
-			const above = anchor.top - panel.height - 12;
-			const top = Math.max(16, Math.min(above >= 16 ? above : anchor.top + 24, innerHeight - panel.height - 16));
+			const plot = chart.current?.querySelector("svg")?.getBoundingClientRect();
+			if (!anchor || !panel || !plot) return;
+			const center = anchor.left + anchor.width / 2;
+			const beside = center + panel.width + 14 <= plot.right ? center + 14 : center - panel.width - 14;
+			const left = Math.max(16, Math.min(Math.max(plot.left, beside), innerWidth - panel.width - 16));
+			const preferredTop = innerWidth <= 640 && plot.top >= panel.height + 28 ? plot.top - panel.height - 12 : plot.top + 8;
+			const top = Math.max(16, Math.min(preferredTop, innerHeight - panel.height - 16));
 			setPosition({ left, top });
 		}
 		place();
 		window.addEventListener("resize", place);
 		window.addEventListener("scroll", place, true);
 		window.addEventListener("keydown", dismiss);
-		return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); window.removeEventListener("keydown", dismiss); };
+		window.addEventListener("pointerdown", dismissOutside);
+		return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); window.removeEventListener("keydown", dismiss); window.removeEventListener("pointerdown", dismissOutside); };
 	}, [hover, visible, metric]);
 	return <div className="obs-activity" ref={chart} onPointerEnter={keepOpen} onPointerLeave={() => { leaveTimer.current = setTimeout(() => setHover(null), 160); }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setHover(null); }} onKeyDown={(event) => { if (event.key === "Escape") { keepOpen(); setHover(null); } }}>
-		<div className="obs-chart-readout">{visible ? <><span>{clock(visible.at, true)}</span><strong>{number(visible[metric])} {metric === "requests" ? "次请求" : "已记录 Token"}</strong></> : <><span>每个刻度是一段真实活动</span><span>{metric === "requests" ? "空白时段表示没有已观测请求" : "仅汇总已记录用量，缺失用量不补零"}</span></>}</div>
-		<svg viewBox="0 0 900 190" role="group" aria-label={`活动图，共 ${points.reduce((n, p) => n + p.requests, 0)} 次请求`}>
-			{[0, 0.5, 1].map((level) => <g key={level}><line x1="40" x2="890" y1={154 - level * 130} y2={154 - level * 130} className="obs-gridline" /><text x="0" y={158 - level * 130} className="obs-axis">{compact(Math.round(max * level))}</text></g>)}
-			{points.map((p, i) => <g key={p.at} className="obs-chart-period" tabIndex={0} role="button" aria-label={`${clock(p.at, true)}，${number(p.requests)} 次请求，查看模型明细`} aria-describedby={hover === i ? tooltipId : undefined} onPointerEnter={() => show(i)} onFocus={() => show(i)} onClick={() => show(i)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(i); } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); const next = Math.max(0, Math.min(points.length - 1, i + (event.key === "ArrowRight" ? 1 : -1))); (event.currentTarget.parentElement?.querySelectorAll<SVGGElement>(".obs-chart-period")[next])?.focus(); } }}><rect x={40 + i * step} y="15" width={step} height="140" fill="transparent" /><rect x={40 + i * step + Math.min(2, step / 5)} y={154 - p[metric] / max * 130} width={Math.max(1, step - Math.min(5, step / 3))} height={p[metric] / max * 130} rx={Math.min(2, step / 5)} className={cn("obs-chart-bar", hover === i && "is-hovered")} /></g>)}
-			{points.filter((_, i) => i === 0 || i === Math.floor((count - 1) / 2) || i === count - 1).map((p, i) => <text key={p.at} x={i === 0 ? 40 : i === 1 ? 465 : 890} y="183" textAnchor={i === 0 ? "start" : i === 1 ? "middle" : "end"} className="obs-axis">{axisTimeFormat.format(new Date(p.at))}</text>)}
-		</svg>
-		{points.length > 0 && <div className="obs-mobile-chart-labels"><span>{clock(points[0].at, true)}</span><span>{clock(points[points.length - 1].at, true)}</span></div>}
+		<div className="obs-chart-plot">
+			<div className="obs-chart-scale" aria-hidden="true"><span>{compact(max)}</span><span>{compact(max / 2)}</span><span>0</span></div>
+			<svg viewBox="0 0 1000 140" preserveAspectRatio="none" role="group" aria-label={`活动图，共 ${points.reduce((n, p) => n + p.requests, 0)} 次请求${metric === "tokens" ? "，Token 仅汇总已记录用量" : ""}`}>
+				{[8, 70, 132].map((y) => <line key={y} x1="0" x2="1000" y1={y} y2={y} className="obs-gridline" vectorEffect="non-scaling-stroke" />)}
+				{points.map((p, i) => <g key={p.at} className={cn("obs-chart-period", hover === i && "is-hovered")} tabIndex={hover === i || (hover === null && i === 0) ? 0 : -1} role="button" aria-label={`${clock(p.at, true)}，${number(p.requests)} 次请求，查看模型明细`} aria-describedby={hover === i ? tooltipId : undefined} onPointerEnter={() => show(i)} onFocus={() => show(i)} onClick={() => show(i)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(i); } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); const next = Math.max(0, Math.min(points.length - 1, i + (event.key === "ArrowRight" ? 1 : -1))); (event.currentTarget.parentElement?.querySelectorAll<SVGGElement>(".obs-chart-period")[next])?.focus(); } }}><rect x={i * step} y="0" width={step} height="140" className="obs-chart-hit" /><rect x={(i + .5) * step - barWidth / 2} y={132 - p[metric] / max * 124} width={barWidth} height={p[metric] / max * 124} rx="2" className="obs-chart-bar" /></g>)}
+			</svg>
+		</div>
+		{points.length > 0 && <div className="obs-chart-times">{[...new Set([0, Math.floor((count - 1) / 2), count - 1])].map((index) => <span key={points[index].at}>{(index === 0 || chartDateFormat.format(new Date(points[0].at)) !== chartDateFormat.format(new Date(points[index].at)) ? periodTimeFormat : shortTimeFormat).format(new Date(points[index].at))}</span>)}</div>}
 		{visible && <div className="obs-activity-tooltip" id={tooltipId} role="tooltip" ref={tooltip} style={position} onPointerEnter={keepOpen}>
-			<div className="obs-activity-tooltip-heading"><strong>{periodTimeFormat.format(new Date(visible.at))} – {periodTimeFormat.format(new Date(visible.until))}</strong><span>北京时间 · 不含结束时刻</span></div>
-			<div className="obs-activity-tooltip-total"><span><strong>{number(visible.requests)}</strong> 次请求</span><span>{recorded ? <><strong>{number(visible.tokens)}</strong> 已记录 Token</> : "Token 未记录"}</span></div>
-			{models.length > 0 ? <div className="obs-activity-tooltip-models" tabIndex={0} aria-label="时段模型用量，可滚动查看"><table><thead><tr><th>模型</th><th>请求</th><th>已记录 Token</th></tr></thead><tbody>{models.map((model) => <tr key={model.model}><td><strong>{model.model}</strong><span>{model.inputRequests || model.outputRequests ? <>{model.inputRequests ? compact(model.input) : "—"} 入 / {model.outputRequests ? compact(model.output) : "—"} 出</> : "用量未记录"}{model.tokenRequests < model.requests && (model.inputRequests > 0 || model.outputRequests > 0) && ` · ${number(model.tokenRequests)}/${number(model.requests)} 条完整`}</span></td><td>{number(model.requests)}</td><td>{model.inputRequests || model.outputRequests ? number(model.input + model.output) : "—"}</td></tr>)}</tbody></table></div> : <p className="obs-activity-tooltip-empty">这个时段没有已观测请求</p>}
-			{models.length > 0 && <div className="obs-activity-tooltip-foot"><span>{number(models.length)} 个模型</span><span>{complete < visible.requests ? `${number(complete)}/${number(visible.requests)} 条完整用量 · 缺失不补零` : "Token = 输入 + 输出"}</span></div>}
+			<div className="obs-activity-tooltip-heading">{activityPeriod(visible.at, visible.until)}</div>
+			{models.length > 0 ? <>
+				<div className="obs-activity-tooltip-models" tabIndex={0} aria-label="时段模型用量，可滚动查看"><table><thead><tr><th>模型</th><th className={cn(metric === "requests" && "is-selected")}>请求</th><th className={cn(metric === "tokens" && "is-selected")}>已记录 Token</th></tr></thead><tbody>{models.map((model) => {
+					const hasUsage = model.inputRequests > 0 || model.outputRequests > 0;
+					return <tr key={model.model}><td><strong>{model.model}</strong></td><td className={cn(metric === "requests" && "is-selected")}>{number(model.requests)}</td><td className={cn(metric === "tokens" && "is-selected")} aria-label={hasUsage ? `${number(model.input + model.output)} 已记录 Token，${number(model.tokenRequests)}/${number(model.requests)} 条完整用量` : "Token 未记录"}><span className="obs-activity-token-value">{hasUsage ? number(model.input + model.output) : "—"}</span></td></tr>;
+				})}</tbody></table></div>
+				{models.length > 1 && <div className="obs-activity-tooltip-sum"><span>合计</span><span>{number(visible.requests)} 次</span><span>{recorded ? `${number(visible.tokens)} Token` : "Token 未记录"}</span></div>}
+			</> : <p className="obs-activity-tooltip-empty">暂无调用</p>}
 		</div>}
 	</div>;
 }

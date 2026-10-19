@@ -767,34 +767,66 @@ test("reconciliation keeps newer usage while retaining ownership evidence from a
 	assert.deepEqual(result.attribution.project.candidates.map((candidate) => candidate.id).sort(), ["project-a", "project-b"]);
 });
 
-test("archive cold start and a second connection retain conflicts from lower-usage ownership revisions", async () => {
+test("archive lazily reloads ownership across cold start, empty deltas, external and restarted revisions", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "observatory-attribution-revision-")), file = join(dir, "history.sqlite");
-	const first = new ObservationArchive(file), second = new ObservationArchive(file);
+	const seed = new ObservationArchive(file);
 	try {
-		first.commit([withAttribution("same", { output: 300 })], []);
-		second.commit([withAttribution("same", { output: 100, attribution: {
+		seed.commit([withAttribution("same", { output: 300 }), withAttribution("other", { output: 50 })], []);
+	} finally {
+		seed.close();
+	}
+	const { DatabaseSync } = require("node:sqlite");
+	const prepare = DatabaseSync.prototype.prepare;
+	let attributionScans = 0;
+	DatabaseSync.prototype.prepare = function (statement) {
+		if (/json_extract\(\s*event\s*,\s*'\$\.attribution'\s*\)/.test(statement)) attributionScans++;
+		return prepare.call(this, statement);
+	};
+	let archive, external, reopened;
+	try {
+		archive = new ObservationArchive(file);
+		external = new ObservationArchive(file);
+		assert.equal(archive.commit([], []), true);
+		archive.commit([withAttribution("same", { output: 100, attribution: {
 			project: projectAttribution({ source: "router", id: "project-b" }),
 			session: sessionAttribution({ source: "router", client: "Codex", id: "session-a" }),
 		} })], []);
-		assert.equal(second.read().observations[0].output, 300);
-		assert.equal(second.read().observations[0].attribution.project.status, "conflict");
+		const published = archive.read(), same = published.observations.find((event) => event.id === "same");
+		assert.equal(same.output, 300);
+		assert.equal(same.attribution.project.status, "conflict");
+		assert.deepEqual(same.attribution.project.candidates.map((candidate) => candidate.id).sort(), ["project-a", "project-b"]);
+		assert.ok(Object.isFrozen(same) && Object.isFrozen(same.attribution) && Object.isFrozen(same.attribution.project));
+		const immutable = JSON.stringify(published);
+		assert.equal(archive.commit([], []), true);
+		assert.equal(archive.read(), published, "An empty delta must not rebuild published observations");
+		external.commit([withAttribution("other", { output: 500, attribution: {
+			project: projectAttribution({ source: "third", id: "project-c" }),
+			session: sessionAttribution({ source: "third", client: "Codex", id: "session-a" }),
+		} })], []);
+		const refreshed = archive.read();
+		assert.notEqual(refreshed, published);
+		assert.equal(refreshed.observations.find((event) => event.id === "same").output, 300);
+		assert.equal(refreshed.observations.find((event) => event.id === "same").attribution.project.status, "conflict");
+		assert.equal(refreshed.observations.find((event) => event.id === "other").output, 500);
+		assert.equal(JSON.stringify(published), immutable, "External revisions must not mutate an older snapshot");
+		archive.close(); archive = undefined;
+		external.close(); external = undefined;
+		reopened = new ObservationArchive(file);
+		reopened.commit([withAttribution("same", { output: 50, attribution: {
+			project: projectAttribution({ source: "third", id: "project-c" }),
+			session: sessionAttribution({ source: "third", client: "Codex", id: "session-a" }),
+		} })], []);
+		const stored = reopened.read().observations.find((event) => event.id === "same");
+		assert.equal(stored.output, 300);
+		assert.equal(stored.attribution.project.status, "conflict");
+		assert.deepEqual(stored.attribution.project.candidates.map((candidate) => candidate.id).sort(), ["project-a", "project-b", "project-c"]);
+		assert.equal(attributionScans, 0, "Archive must not prepare an eager full-table attribution query");
 	} finally {
-		first.close();
-		second.close();
-		const reopened = new ObservationArchive(file);
-		try {
-			reopened.commit([withAttribution("same", { output: 50, attribution: {
-				project: projectAttribution({ source: "third", id: "project-c" }),
-				session: sessionAttribution({ source: "third", client: "Codex", id: "session-a" }),
-			} })], []);
-			const stored = reopened.read().observations[0];
-			assert.equal(stored.output, 300);
-			assert.equal(stored.attribution.project.status, "conflict");
-			assert.deepEqual(stored.attribution.project.candidates.map((candidate) => candidate.id).sort(), ["project-a", "project-b", "project-c"]);
-		} finally {
-			reopened.close();
-			await rm(dir, { recursive: true, force: true });
-		}
+		DatabaseSync.prototype.prepare = prepare;
+		archive?.close();
+		external?.close();
+		reopened?.close();
+		await rm(dir, { recursive: true, force: true });
 	}
 });
 

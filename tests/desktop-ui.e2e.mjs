@@ -134,11 +134,13 @@ try {
 	assert.equal(await page.locator(".obs-activity svg title").count(), 0, "the old native tooltip must not cover the model panel");
 	assert.equal(await tooltip.locator("tbody tr").count(), activityPoint.models.length);
 	const formatCount = (n) => new Intl.NumberFormat("zh-CN").format(n);
-	assert.ok((await tooltip.locator(".obs-activity-tooltip-total").innerText()).includes(formatCount(activityPoint.requests)));
+	assert.ok((await tooltip.locator(".obs-activity-tooltip-sum").innerText()).includes(formatCount(activityPoint.requests)));
+	assert.equal(await page.locator(".obs-chart-readout").count(), 0, "the chart should not repeat tooltip values or explanatory text");
 	for (const model of activityPoint.models) {
 		const row = tooltip.locator("tbody tr").filter({ has: page.getByText(model.model, { exact: true }) });
 		assert.equal(await row.locator("td").nth(1).innerText(), formatCount(model.requests));
-		assert.equal(await row.locator("td").nth(2).innerText(), model.inputRequests || model.outputRequests ? formatCount(model.input + model.output) : "—");
+		assert.equal(await row.locator(".obs-activity-token-value").innerText(), model.inputRequests || model.outputRequests ? formatCount(model.input + model.output) : "—");
+		assert.equal(await row.locator("td").nth(2).getAttribute("aria-label"), model.inputRequests || model.outputRequests ? `${formatCount(model.input + model.output)} 已记录 Token，${formatCount(model.tokenRequests)}/${formatCount(model.requests)} 条完整用量` : "Token 未记录");
 	}
 	await tooltip.hover();
 	await page.waitForTimeout(200);
@@ -179,9 +181,27 @@ try {
 	const emptyIndex = activityData.activity.findIndex((point) => point.requests === 0);
 	if (emptyIndex >= 0) {
 		await page.locator(".obs-chart-period").nth(emptyIndex).focus();
-		await tooltip.getByText("这个时段没有已观测请求").waitFor();
+		await tooltip.getByText("暂无调用").waitFor();
 		await page.keyboard.press("Escape");
 	}
+	const todayActivity = await range("今天");
+	const singleIndex = todayActivity.activity.findIndex((point) => point.models.length === 1);
+	if (singleIndex >= 0) {
+		const singlePeriod = page.locator(".obs-chart-period").nth(singleIndex);
+		await singlePeriod.scrollIntoViewIfNeeded();
+		await singlePeriod.hover();
+		await tooltip.waitFor();
+		assert.equal(await tooltip.locator("tbody tr").count(), 1);
+		assert.equal(await tooltip.locator(".obs-activity-tooltip-sum").count(), 0, "a single-model period must not repeat the same values as a total");
+		assert.ok((await tooltip.boundingBox()).height < 150, "a single-model tooltip should remain compact");
+		await page.screenshot({ path: "logs/desktop-ui-acceptance/activity-today-dark.png" });
+		await tooltip.screenshot({ path: "logs/desktop-ui-acceptance/activity-single-dark.png" });
+		await page.keyboard.press("Escape");
+	}
+	const canvas = await page.locator(".obs-activity svg").boundingBox();
+	assert.equal(canvas.height, 164, "chart height must stay fixed on a wide desktop");
+	await page.locator(".obs-activity-section").screenshot({ path: "logs/desktop-ui-acceptance/activity-chart-dark.png" });
+	await range("全部");
 	await page.getByRole("button", { name: "切换浅色", exact: true }).click();
 	await page.evaluate(() => window.scrollTo(0, 0));
 	record("活动浮层按时段展示模型、请求与真实用量，支持滚动、键盘和窄窗口边缘避让");

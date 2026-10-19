@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { freezeEventAttribution, mergeEventAttribution } from "./attribution";
-import type { Coverage, ModelEvent, ModelEventAttribution } from "./types";
+import type { Coverage, ModelEvent } from "./types";
 
 export type CollectionState = { paused: boolean; collectedAt: string | null; observations: number };
 
@@ -18,14 +18,12 @@ export class ObservationArchive {
 	private observations?: ModelEvent[];
 	private cachedRead?: { observations: ModelEvent[]; coverage: Coverage[] };
 	private cachedState?: CollectionState;
-	private storedAttributions?: Map<string, ModelEventAttribution>;
 	private storedIds?: Set<string>;
 	private readMeta;
 	private writeMeta;
 	private countRows;
 	private readEvent;
 	private readIds;
-	private readAttributions;
 	private dataVersionQuery;
 	private insertEvent;
 	constructor(path: string) {
@@ -42,7 +40,6 @@ export class ObservationArchive {
 		this.countRows = this.db.prepare("SELECT count(*) AS n FROM observations");
 		this.readEvent = this.db.prepare("SELECT event FROM observations WHERE id=?");
 		this.readIds = this.db.prepare("SELECT id FROM observations");
-		this.readAttributions = this.db.prepare("SELECT id,json_extract(event,'$.attribution') AS attribution FROM observations WHERE json_type(event,'$.attribution')='object'");
 		this.dataVersionQuery = this.db.prepare("PRAGMA data_version");
 		this.insertEvent = this.db.prepare(`INSERT INTO observations VALUES (?,?) ON CONFLICT(id) DO UPDATE SET event=excluded.event
 			WHERE observations.event<>excluded.event AND
@@ -61,7 +58,7 @@ export class ObservationArchive {
 		if (version !== this.dataVersion) {
 			this.observationRevision++;
 			this.dataVersion = version;
-			this.accepted.clear(); this.strings.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedAttributions = undefined; this.storedIds = undefined;
+			this.accepted.clear(); this.strings.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedIds = undefined;
 		}
 	}
 	private ids() {
@@ -69,19 +66,6 @@ export class ObservationArchive {
 		const values = new Set<string>();
 		for (const row of this.readIds.iterate()) values.add(String(row.id));
 		return this.storedIds = values;
-	}
-	private attributions() {
-		if (this.storedAttributions) return this.storedAttributions;
-		const values = new Map<string, ModelEventAttribution>();
-		for (const row of this.readAttributions.iterate()) {
-			try {
-				const attribution = JSON.parse(String(row.attribution)) as ModelEventAttribution;
-				if (attribution && typeof attribution === "object") values.set(String(row.id), freezeEventAttribution(attribution));
-			} catch {
-				// A malformed old row remains readable as unattributed history.
-			}
-		}
-		return this.storedAttributions = values;
 	}
 	state(): CollectionState {
 		this.checkExternalWrites();
@@ -101,7 +85,6 @@ export class ObservationArchive {
 			if (this.value("paused") === "true") { this.db.exec("ROLLBACK"); return false; }
 			// Stream fragments and copied logs can replay an older, shorter revision.
 			let changed = false, recordsChanged = false;
-			const storedAttributions = this.attributions();
 			const storedIds = this.ids();
 			for (const incoming of observations) {
 				let previous = this.accepted.get(incoming.id);
@@ -127,7 +110,6 @@ export class ObservationArchive {
 				if (inserted) {
 					this.accepted.set(event.id, this.immutable(event)); this.observations = undefined; changed = true; recordsChanged = true;
 					storedIds.add(event.id);
-					if (attribution) storedAttributions.set(event.id, attribution);
 				}
 			}
 			const encodedCoverage = JSON.stringify(coverage);
@@ -138,7 +120,7 @@ export class ObservationArchive {
 			if (changed) this.cachedRead = undefined;
 			if (recordsChanged) this.observationRevision++;
 			return true;
-		} catch (error) { this.db.exec("ROLLBACK"); this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedAttributions = undefined; this.storedIds = undefined; throw error; }
+		} catch (error) { this.db.exec("ROLLBACK"); this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedIds = undefined; throw error; }
 	}
 	private immutable(event: ModelEvent) {
 		// Readers publish revisions as new objects. Sharing these immutable records
