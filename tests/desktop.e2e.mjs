@@ -77,7 +77,7 @@ try {
 	assert.equal(await page.evaluate(() => typeof window.require), "undefined");
 	assert.equal(await page.evaluate(() => typeof window.process), "undefined");
 	const origin = new URL(page.url()).origin;
-	for (const route of ["/", "/models", "/requests", "/tools", "/favicon.ico", "/app.ico"]) {
+	for (const route of ["/", "/models", "/projects", "/sessions", "/requests", "/tools", "/favicon.ico", "/app.ico"]) {
 		const response = await fetch(origin + route);
 		assert.equal(response.status, 403, `Ordinary browser access must be closed: ${route}`);
 		assert.match(await response.text(), /桌面应用/);
@@ -129,6 +129,19 @@ try {
 	await waitUntil(() => electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized()));
 	await electronApp.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.restore(); w.show(); });
 	record("标准窗口自由缩放、最大化、最小化和恢复");
+	for (const [route, heading] of [["/projects", "项目账本"], ["/sessions", "会话账本"]]) {
+		await page.evaluate((target) => location.assign(target), `${origin}${route}?range=all`);
+		await page.waitForURL((url) => url.pathname === route);
+		await page.getByRole("heading", { level: 1, name: heading, exact: true }).waitFor();
+		await page.reload();
+		await page.getByRole("heading", { level: 1, name: heading, exact: true }).waitFor();
+		assert.equal(new URL(page.url()).searchParams.get("range"), "all");
+	}
+	const dashboardUrl = page.url();
+	await page.evaluate((target) => location.assign(target), `${origin}/api/health`);
+	await page.waitForTimeout(250);
+	assert.equal(page.url(), dashboardUrl, "API responses must not replace the dashboard");
+	record("项目与会话支持完整页面导航和刷新，API 不能作为界面导航目标");
 	const currentUrl = page.url();
 	await page.evaluate(() => { const a = document.createElement("a"); a.href = "https://example.com/desktop-navigation-test"; a.textContent = "external-test"; document.body.append(a); a.click(); a.remove(); });
 	await page.waitForTimeout(250);

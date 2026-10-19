@@ -1,19 +1,32 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { Activity, ArrowDown, ArrowDownToLine, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, Layers3, LockKeyhole, Moon, Pause, Play, Radio, RefreshCw, Search, Sun, X, Zap } from "lucide-react";
+import { Activity, ArrowDown, ArrowDownToLine, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Database, Folder, Layers3, LockKeyhole, MessageSquare, Moon, Pause, Play, Radio, RefreshCw, Search, Sun, X, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/theme-provider";
 import { AliasEditor } from "./alias-editor";
+import { AttributionView, RequestAttribution, type AttributionSort } from "./attribution-view";
 import { DateRangePicker } from "./date-range-picker";
 import { validCustomDates, type CustomDates } from "@/lib/observatory/time-range";
 import { modelVendor } from "@/lib/observatory/identity";
+import { eventAttribution } from "@/lib/observatory/attribution";
 import type { ModelSummary, ObservatorySnapshot, ModelEvent } from "@/lib/observatory/types";
 
-type View = "models" | "requests" | "coverage";
+type View = "models" | "projects" | "sessions" | "requests" | "coverage";
+type RangeSelection = { source: string; range: string; from: string; to: string };
 const ranges = [{ id: "today", label: "今天" }, { id: "week", label: "这周" }, { id: "month", label: "这月" }, { id: "all", label: "全部" }, { id: "custom", label: "任意时间" }];
+function validRange(range: string, from: string, to: string) {
+	return ranges.some((item) => item.id === range) && (range !== "custom" || validCustomDates({ from, to }));
+}
+function fallbackRange(initialRange: string, initialFrom: string, initialTo: string, savedRange: string, savedFrom: string, savedTo: string) {
+	const initialValid = validRange(initialRange, initialFrom, initialTo);
+	const savedValid = validRange(savedRange, savedFrom, savedTo);
+	if (initialValid) return { range: initialRange, from: initialRange === "custom" ? initialFrom : "", to: initialRange === "custom" ? initialTo : "" };
+	if (savedValid) return { range: savedRange, from: savedRange === "custom" ? savedFrom : "", to: savedRange === "custom" ? savedTo : "" };
+	return { range: "today", from: "", to: "" };
+}
 const numberFormat = new Intl.NumberFormat("zh-CN"), compactFormat = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 2 });
 const number = (n: number) => numberFormat.format(n);
 const compact = (n: number) => compactFormat.format(n);
@@ -23,6 +36,7 @@ const timeOptions: Intl.DateTimeFormatOptions = { timeZone: "Asia/Shanghai", hou
 const timeFormat = new Intl.DateTimeFormat("zh-CN", timeOptions);
 const dateTimeFormat = new Intl.DateTimeFormat("zh-CN", { ...timeOptions, month: "2-digit", day: "2-digit" });
 const axisTimeFormat = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", hour12: false });
+const periodTimeFormat = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 const clock = (at: string, date = false) => !at ? "时间未记录" : (date ? dateTimeFormat : timeFormat).format(new Date(at));
 
 function Empty({ title, text }: { title: string; text: string }) {
@@ -40,17 +54,51 @@ function ModelUsage({ model }: { model: ModelSummary }) {
 
 function ActivityChart({ points, metric }: { points: ObservatorySnapshot["activity"]; metric: "requests" | "tokens" }) {
 	const [hover, setHover] = useState<number | null>(null);
+	const [position, setPosition] = useState({ left: 16, top: 16 });
+	const chart = useRef<HTMLDivElement>(null), tooltip = useRef<HTMLDivElement>(null);
+	const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const tooltipId = useId();
 	const max = Math.max(1, ...points.map((p) => p[metric]));
 	const count = Math.max(1, points.length), step = 850 / count;
 	const visible = hover === null ? null : points[hover];
-	return <div className="obs-activity">
+	const models = visible ? [...visible.models].sort((a, b) => metric === "requests" ? b.requests - a.requests || a.model.localeCompare(b.model) : (b.input + b.output) - (a.input + a.output) || b.requests - a.requests || a.model.localeCompare(b.model)) : [];
+	const recorded = models.some((m) => m.inputRequests > 0 || m.outputRequests > 0);
+	const complete = models.reduce((sum, m) => sum + m.tokenRequests, 0);
+	function keepOpen() { if (leaveTimer.current) clearTimeout(leaveTimer.current); }
+	function show(index: number) { keepOpen(); setHover(index); }
+	useEffect(() => () => { if (leaveTimer.current) clearTimeout(leaveTimer.current); }, []);
+	useLayoutEffect(() => {
+		if (!visible) return;
+		function dismiss(event: KeyboardEvent) { if (event.key === "Escape") { keepOpen(); setHover(null); } }
+		function place() {
+			const anchor = chart.current?.querySelectorAll(".obs-chart-period")[hover!]?.getBoundingClientRect();
+			const panel = tooltip.current?.getBoundingClientRect();
+			if (!anchor || !panel) return;
+			const left = Math.max(16, Math.min(anchor.left + anchor.width / 2 - panel.width / 2, innerWidth - panel.width - 16));
+			const above = anchor.top - panel.height - 12;
+			const top = Math.max(16, Math.min(above >= 16 ? above : anchor.top + 24, innerHeight - panel.height - 16));
+			setPosition({ left, top });
+		}
+		place();
+		window.addEventListener("resize", place);
+		window.addEventListener("scroll", place, true);
+		window.addEventListener("keydown", dismiss);
+		return () => { window.removeEventListener("resize", place); window.removeEventListener("scroll", place, true); window.removeEventListener("keydown", dismiss); };
+	}, [hover, visible, metric]);
+	return <div className="obs-activity" ref={chart} onPointerEnter={keepOpen} onPointerLeave={() => { leaveTimer.current = setTimeout(() => setHover(null), 160); }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setHover(null); }} onKeyDown={(event) => { if (event.key === "Escape") { keepOpen(); setHover(null); } }}>
 		<div className="obs-chart-readout">{visible ? <><span>{clock(visible.at, true)}</span><strong>{number(visible[metric])} {metric === "requests" ? "次请求" : "已记录 Token"}</strong></> : <><span>每个刻度是一段真实活动</span><span>{metric === "requests" ? "空白时段表示没有已观测请求" : "仅汇总已记录用量，缺失用量不补零"}</span></>}</div>
-		<svg viewBox="0 0 900 190" role="img" aria-label={`活动图，共 ${points.reduce((n, p) => n + p.requests, 0)} 次请求`} onMouseLeave={() => setHover(null)}>
+		<svg viewBox="0 0 900 190" role="group" aria-label={`活动图，共 ${points.reduce((n, p) => n + p.requests, 0)} 次请求`}>
 			{[0, 0.5, 1].map((level) => <g key={level}><line x1="40" x2="890" y1={154 - level * 130} y2={154 - level * 130} className="obs-gridline" /><text x="0" y={158 - level * 130} className="obs-axis">{compact(Math.round(max * level))}</text></g>)}
-			{points.map((p, i) => <g key={p.at} onMouseEnter={() => setHover(i)}><rect x={40 + i * step} y="15" width={step} height="140" fill="transparent" /><rect x={40 + i * step + Math.min(2, step / 5)} y={154 - p[metric] / max * 130} width={Math.max(1, step - Math.min(5, step / 3))} height={p[metric] / max * 130} rx={Math.min(2, step / 5)} className={cn("obs-chart-bar", hover === i && "is-hovered")} /><title>{clock(p.at, true)}：{number(p[metric])}</title></g>)}
+			{points.map((p, i) => <g key={p.at} className="obs-chart-period" tabIndex={0} role="button" aria-label={`${clock(p.at, true)}，${number(p.requests)} 次请求，查看模型明细`} aria-describedby={hover === i ? tooltipId : undefined} onPointerEnter={() => show(i)} onFocus={() => show(i)} onClick={() => show(i)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); show(i); } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); const next = Math.max(0, Math.min(points.length - 1, i + (event.key === "ArrowRight" ? 1 : -1))); (event.currentTarget.parentElement?.querySelectorAll<SVGGElement>(".obs-chart-period")[next])?.focus(); } }}><rect x={40 + i * step} y="15" width={step} height="140" fill="transparent" /><rect x={40 + i * step + Math.min(2, step / 5)} y={154 - p[metric] / max * 130} width={Math.max(1, step - Math.min(5, step / 3))} height={p[metric] / max * 130} rx={Math.min(2, step / 5)} className={cn("obs-chart-bar", hover === i && "is-hovered")} /></g>)}
 			{points.filter((_, i) => i === 0 || i === Math.floor((count - 1) / 2) || i === count - 1).map((p, i) => <text key={p.at} x={i === 0 ? 40 : i === 1 ? 465 : 890} y="183" textAnchor={i === 0 ? "start" : i === 1 ? "middle" : "end"} className="obs-axis">{axisTimeFormat.format(new Date(p.at))}</text>)}
 		</svg>
 		{points.length > 0 && <div className="obs-mobile-chart-labels"><span>{clock(points[0].at, true)}</span><span>{clock(points[points.length - 1].at, true)}</span></div>}
+		{visible && <div className="obs-activity-tooltip" id={tooltipId} role="tooltip" ref={tooltip} style={position} onPointerEnter={keepOpen}>
+			<div className="obs-activity-tooltip-heading"><strong>{periodTimeFormat.format(new Date(visible.at))} – {periodTimeFormat.format(new Date(visible.until))}</strong><span>北京时间 · 不含结束时刻</span></div>
+			<div className="obs-activity-tooltip-total"><span><strong>{number(visible.requests)}</strong> 次请求</span><span>{recorded ? <><strong>{number(visible.tokens)}</strong> 已记录 Token</> : "Token 未记录"}</span></div>
+			{models.length > 0 ? <div className="obs-activity-tooltip-models" tabIndex={0} aria-label="时段模型用量，可滚动查看"><table><thead><tr><th>模型</th><th>请求</th><th>已记录 Token</th></tr></thead><tbody>{models.map((model) => <tr key={model.model}><td><strong>{model.model}</strong><span>{model.inputRequests || model.outputRequests ? <>{model.inputRequests ? compact(model.input) : "—"} 入 / {model.outputRequests ? compact(model.output) : "—"} 出</> : "用量未记录"}{model.tokenRequests < model.requests && (model.inputRequests > 0 || model.outputRequests > 0) && ` · ${number(model.tokenRequests)}/${number(model.requests)} 条完整`}</span></td><td>{number(model.requests)}</td><td>{model.inputRequests || model.outputRequests ? number(model.input + model.output) : "—"}</td></tr>)}</tbody></table></div> : <p className="obs-activity-tooltip-empty">这个时段没有已观测请求</p>}
+			{models.length > 0 && <div className="obs-activity-tooltip-foot"><span>{number(models.length)} 个模型</span><span>{complete < visible.requests ? `${number(complete)}/${number(visible.requests)} 条完整用量 · 缺失不补零` : "Token = 输入 + 输出"}</span></div>}
+		</div>}
 	</div>;
 }
 
@@ -66,7 +114,7 @@ function RequestRows({ rows }: { rows: ModelEvent[] }) {
 	const [expanded, setExpanded] = useState<string | null>(null);
 	return <div className="obs-table-scroll"><table className="obs-table obs-request-table"><thead><tr><th>时间</th><th>模型 / 工具</th><th>输入 / 输出 Token</th><th className="obs-optional">路由</th><th>证据</th><th><span className="sr-only">展开详情</span></th></tr></thead><tbody>{rows.map((row) => <Fragment key={row.id}>
 		<tr><td className="obs-time" title={row.timeKnown === false ? "原始记录未提供调用时间" : row.at}>{row.timeKnown === false ? "时间未记录" : clock(row.at, true)}</td><td><strong className="obs-request-model">{row.model}</strong><span className="obs-subtext">{row.client}</span></td><td className="obs-numeric"><strong>{tokens(row.input)} <span className="obs-slash">/</span> {tokens(row.output)}</strong><span className="obs-subtext">{row.cache !== null ? `缓存 ${compact(row.cache)}` : "缓存未记录"}</span></td><td className="obs-optional obs-route">{row.upstream}</td><td><span className={cn("obs-evidence", row.evidence.length > 1 && "obs-evidence-matched")}>{row.evidence.length > 1 ? <Check size={12} /> : <Database size={12} />}{row.evidence.length > 1 ? "已核对" : row.scope === "turn" ? "会话请求" : row.identity === "configured" ? "会话记录" : "原始记录"}</span>{row.status === "error" && <span className="obs-error-tag">失败</span>}</td><td><button className="obs-icon-button" aria-label={`查看请求 ${row.id} 的证据`} aria-expanded={expanded === row.id} onClick={() => setExpanded(expanded === row.id ? null : row.id)}><ChevronDown size={15} /></button></td></tr>
-		{expanded === row.id && <tr className="obs-expanded-row"><td colSpan={6}><div className="obs-request-evidence"><div><span>原始模型名称</span><code>{row.rawModel}</code></div><div><span>计数依据</span><p>{row.scope === "turn" && "一次会话请求，非逐步模型调用 · "}{row.evidence.map((e) => e.source).join(" + ")} · {row.identity === "configured" ? "模型来自会话配置" : "模型来自原始记录"}</p></div><div><span>用量与状态</span><p>{row.input === null ? "Token 未报告" : "输入已包含缓存，缓存不重复相加"} · {row.status === "unknown" ? "HTTP 状态未记录" : row.status === "error" ? "失败 / 取消" : "成功"}{row.duration !== null ? ` · ${(row.duration / 1000).toFixed(2)} 秒` : ""}</p></div><code className="obs-event-id">事件 {row.id}</code></div></td></tr>}
+		{expanded === row.id && (() => { const attribution = eventAttribution(row); return <tr className="obs-expanded-row"><td colSpan={6}><div className="obs-request-evidence"><div><span>原始模型名称</span><code>{row.rawModel}</code></div><div><span>计数依据</span><p>{row.scope === "turn" && "一次会话请求，非逐步模型调用 · "}{row.evidence.map((e) => e.source).join(" + ")} · {row.identity === "configured" ? "模型来自会话配置" : "模型来自原始记录"}</p></div><div><span>用量与状态</span><p>{row.input === null ? "Token 未报告" : "输入已包含缓存，缓存不重复相加"} · {row.status === "unknown" ? "HTTP 状态未记录" : row.status === "error" ? "失败 / 取消" : "成功"}{row.duration !== null ? ` · ${(row.duration / 1000).toFixed(2)} 秒` : ""}</p></div><div><span>项目归属</span><RequestAttribution value={attribution.project} /></div><div><span>会话归属</span><RequestAttribution value={attribution.session} />{attribution.parentSession && (attribution.parentSession.status === "known" || attribution.parentSession.status === "conflict") && <div className="obs-request-parent"><span>父会话</span><RequestAttribution value={attribution.parentSession} /></div>}</div><code className="obs-event-id">事件 {row.id}</code></div></td></tr>; })()}
 	</Fragment>)}</tbody></table>{!rows.length && <Empty title="这个范围还没有请求" text="换一个时间范围，或清除筛选。新请求被本机记录后会自动出现。" />}</div>;
 }
 
@@ -120,26 +168,58 @@ function useSessionPreference(key: string, fallback: string) {
 	return [value, update] as const;
 }
 
-export function Observatory({ view = "models", initialModel = "", initialRange = "", initialFrom = "", initialTo = "", initialClient = "" }: { view?: View; initialModel?: string; initialRange?: string; initialFrom?: string; initialTo?: string; initialClient?: string }) {
+export function Observatory({ view = "models", initialModel = "", initialRange = "", initialFrom = "", initialTo = "", initialClient = "", initialProject = "", initialSession = "", initialUnknown = "", initialSort = "requests" }: { view?: View; initialModel?: string; initialRange?: string; initialFrom?: string; initialTo?: string; initialClient?: string; initialProject?: string; initialSession?: string; initialUnknown?: string; initialSort?: string }) {
 	const [savedRange, saveRange] = useSessionPreference("observatory-range", "today");
 	const [savedDates, saveDates] = useSessionPreference("observatory-dates", "");
 	const [pausedPreference, savePaused] = useSessionPreference("observatory-refresh-paused", "false");
 	const preferencesReady = useSyncExternalStore(subscribePreferences, () => true, () => false);
 	const [savedFrom = "", savedTo = ""] = savedDates.split("/");
-	const from = initialRange === "custom" ? initialFrom : savedFrom, to = initialRange === "custom" ? initialTo : savedTo;
-	const preferredRange = initialRange || savedRange;
-	const range = ranges.some((r) => r.id === preferredRange) && (preferredRange !== "custom" || validCustomDates({ from, to })) ? preferredRange : "today";
+	const initialRangeValid = validRange(initialRange, initialFrom, initialTo);
+	const rangeSource = initialRangeValid
+		? `initial:${initialRange}\u0000${initialFrom}\u0000${initialTo}`
+		: `initial:${initialRange}\u0000${initialFrom}\u0000${initialTo}\u0000saved:${savedRange}\u0000${savedFrom}\u0000${savedTo}`;
+	const initialFallback = fallbackRange(initialRange, initialFrom, initialTo, savedRange, savedFrom, savedTo);
+	const { range: fallbackValue, from: fallbackFrom, to: fallbackTo } = initialFallback;
+	const [rangeSelection, setRangeSelection] = useState<RangeSelection>({ source: rangeSource, range: fallbackValue, from: fallbackFrom, to: fallbackTo });
+	let activeRange = rangeSelection;
+	if (rangeSelection.source !== rangeSource) {
+		activeRange = { source: rangeSource, range: fallbackValue, from: fallbackFrom, to: fallbackTo };
+		setRangeSelection(activeRange);
+	}
+	const { range, from, to } = activeRange;
 	const rangeParams = new URLSearchParams({ range, ...(range === "custom" ? { from, to } : {}) }).toString();
 	const [dateEditorOpen, setDateEditorOpen] = useState(false);
 	const customButton = useRef<HTMLButtonElement>(null);
+	const snapshotParams = useRef("");
 	const paused = pausedPreference === "true";
 	const [snapshot, setSnapshot] = useState<ObservatorySnapshot | null>(null);
 	const [error, setError] = useState(""), [busy, setBusy] = useState(true), [refresh, setRefresh] = useState(0);
 	const [resuming, setResuming] = useState(false);
 	const [query, setQuery] = useState(""), [modelFilter, setModelFilter] = useState(initialModel), [clientFilter, setClientFilter] = useState(initialClient), [page, setPage] = useState(0), [expanded, setExpanded] = useState<string | null>(null);
 	const [sort, setSort] = useState<"requests" | "tokens" | "latest">("requests"), [chartMetric, setChartMetric] = useState<"requests" | "tokens">("requests");
+	const [projectFilter, setProjectFilter] = useState(initialProject), [sessionFilter, setSessionFilter] = useState(initialSession), [unknownFilter, setUnknownFilter] = useState(initialUnknown);
+	const [attributionSort, setAttributionSort] = useState<AttributionSort>(initialSort === "tokens" ? "tokens" : "requests");
 	const { theme, toggleTheme } = useTheme();
-	const params = useMemo(() => new URLSearchParams({ ...(view === "coverage" ? { range: "all" } : Object.fromEntries(new URLSearchParams(rangeParams))), ...(view === "requests" ? { query, model: modelFilter, client: clientFilter, page: String(page) } : { limit: "0" }) }).toString(), [rangeParams, query, modelFilter, clientFilter, page, view]);
+	const params = useMemo(() => new URLSearchParams({
+		...(view === "coverage" ? { range: "all" } : Object.fromEntries(new URLSearchParams(rangeParams))),
+		...(view === "projects" ? { view: projectFilter ? "project" : "projects", ...(projectFilter ? { project: projectFilter } : {}), ...(projectFilter && sessionFilter ? { session: sessionFilter } : {}) } : view === "sessions" ? { view: sessionFilter ? "session" : "sessions", ...(sessionFilter ? { session: sessionFilter } : {}), ...(sessionFilter && projectFilter ? { project: projectFilter } : {}) } : {}),
+		...(view === "requests" ? { query, model: modelFilter, client: clientFilter, page: String(page), ...(projectFilter ? { project: projectFilter } : {}), ...(sessionFilter ? { session: sessionFilter } : {}), ...(unknownFilter ? { view: "unknown", unknown: unknownFilter } : {}) } : { limit: "0" }),
+	}).toString(), [rangeParams, query, modelFilter, clientFilter, page, view, projectFilter, sessionFilter, unknownFilter]);
+	useEffect(() => {
+		function restoreFromLocation() {
+			const current = new URL(window.location.href).searchParams;
+			setBusy(true);
+			const restoredRange = current.get("range") ?? "", restoredFrom = current.get("from") ?? "", restoredTo = current.get("to") ?? "";
+			const restored = validRange(restoredRange, restoredFrom, restoredTo)
+				? { range: restoredRange, from: restoredRange === "custom" ? restoredFrom : "", to: restoredRange === "custom" ? restoredTo : "" }
+				: { range: fallbackValue, from: fallbackFrom, to: fallbackTo };
+			setRangeSelection({ source: rangeSource, ...restored });
+			setProjectFilter(current.get("project") ?? ""); setSessionFilter(current.get("session") ?? ""); setUnknownFilter(current.get("unknown") ?? "");
+			setAttributionSort(current.get("sort") === "tokens" ? "tokens" : "requests");
+		}
+		window.addEventListener("popstate", restoreFromLocation);
+		return () => window.removeEventListener("popstate", restoreFromLocation);
+	}, [fallbackFrom, fallbackTo, fallbackValue, rangeSource]);
 	useEffect(() => {
 		if (!preferencesReady) return;
 		let controller: AbortController | undefined;
@@ -160,6 +240,7 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 						try { sessionStorage.setItem("observatory-range", range); if (range === "custom") sessionStorage.setItem("observatory-dates", `${from}/${to}`); } catch { /* The URL still retains the range. */ }
 					}
 					setSnapshot((previous) => {
+						if (!previous || snapshotParams.current !== params) { snapshotParams.current = params; return data; }
 						if (!previous || previous.generatedAt !== data.generatedAt || previous.range !== data.range || previous.since !== data.since || previous.until !== data.until || previous.requestCount !== data.requestCount || previous.requests.length !== data.requests.length || previous.requests[0]?.id !== data.requests[0]?.id || previous.requests.at(-1)?.id !== data.requests.at(-1)?.id || previous.totals.requests !== data.totals.requests || previous.totals.input !== data.totals.input || previous.totals.output !== data.totals.output || previous.totals.cache !== data.totals.cache || previous.models.length !== data.models.length || previous.models[0]?.model !== data.models[0]?.model || previous.activity.length !== data.activity.length) return data;
 						if (previous.collection?.collectedAt === data.collection?.collectedAt && previous.collection?.collecting === data.collection?.collecting && previous.collection?.paused === data.collection?.paused && previous.collection?.error === data.collection?.error && previous.collection?.observations === data.collection?.observations) return previous;
 						return { ...previous, collection: data.collection };
@@ -184,7 +265,7 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 	const allClients = useMemo(() => { const result = new Map<string, number>(); for (const m of snapshot?.models ?? []) for (const c of m.clients) result.set(c.name, (result.get(c.name) ?? 0) + c.requests); return [...result].sort((a, b) => b[1] - a[1]); }, [snapshot]);
 	const total = snapshot?.totals;
 	const collectionPaused = snapshot?.collection?.paused ?? false;
-	const titles = { models: "模型总览", requests: "请求流水", coverage: "接入与口径" };
+	const titles = { models: "模型总览", projects: "项目账本", sessions: "会话账本", requests: "请求流水", coverage: "接入与口径" };
 	async function resumeCollection() {
 		setResuming(true);
 		try {
@@ -200,6 +281,7 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 	}
 	const closeDateEditor = useCallback(() => { setDateEditorOpen(false); customButton.current?.focus(); }, []);
 	function chooseRange(value: string, dates?: CustomDates) {
+		setRangeSelection({ source: rangeSource, range: value, from: dates?.from ?? "", to: dates?.to ?? "" });
 		if (dates) saveDates(`${dates.from}/${dates.to}`);
 		saveRange(value); setPage(0);
 		setDateEditorOpen(false);
@@ -208,9 +290,45 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 		url.searchParams.set("range", value);
 		url.searchParams.delete("from"); url.searchParams.delete("to");
 		if (dates) { url.searchParams.set("from", dates.from); url.searchParams.set("to", dates.to); }
-		window.history.replaceState(null, "", url);
+		window.history.replaceState(window.history.state, "", url);
 	}
-	const overviewHref = `/?${rangeParams}`, requestsHref = `/requests?${rangeParams}`;
+	function replaceAttributionUrl(changes: Record<string, string>) {
+		const url = new URL(window.location.href);
+		for (const [key, value] of Object.entries(changes)) {
+			if (value) url.searchParams.set(key, value);
+			else url.searchParams.delete(key);
+		}
+		window.history.replaceState(window.history.state, "", url);
+	}
+	function chooseAttributionSort(value: AttributionSort) {
+		setAttributionSort(value);
+		replaceAttributionUrl({ sort: value });
+	}
+	function selectProject(key: string) {
+		const next = projectFilter === key ? "" : key;
+		setBusy(true);
+		setProjectFilter(next); setSessionFilter(""); setUnknownFilter("");
+		const url = new URL(window.location.href);
+		if (next) url.searchParams.set("project", next); else url.searchParams.delete("project");
+		url.searchParams.delete("session"); url.searchParams.delete("unknown");
+		window.history.pushState(null, "", url);
+	}
+	function selectSession(key: string) {
+		const next = sessionFilter === key ? "" : key;
+		setBusy(true);
+		setSessionFilter(next); setProjectFilter(""); setUnknownFilter("");
+		const url = new URL(window.location.href);
+		if (next) url.searchParams.set("session", next); else url.searchParams.delete("session");
+		url.searchParams.delete("project"); url.searchParams.delete("unknown");
+		window.history.pushState(null, "", url);
+	}
+	function clearAttributionFilters() {
+		setProjectFilter(""); setSessionFilter(""); setUnknownFilter("");
+		const url = new URL(window.location.href);
+		url.searchParams.delete("project"); url.searchParams.delete("session"); url.searchParams.delete("unknown");
+		window.history.replaceState(window.history.state, "", url);
+	}
+	const overviewHref = `/?${rangeParams}`, projectsHref = `/projects?${rangeParams}`, sessionsHref = `/sessions?${rangeParams}`, requestsHref = `/requests?${rangeParams}`;
 	const rangeMatches = snapshot?.range === range && (range !== "custom" || (snapshot.since === new Date(`${from}T00:00:00+08:00`).toISOString() && snapshot.until === new Date(Date.parse(`${to}T00:00:00+08:00`) + 86_400_000).toISOString()));
 	const rangeDescription = error && !rangeMatches ? "所选范围读取失败 · 保留上次结果" : busy || !rangeMatches ? "正在加载所选范围…" : range === "custom" ? `北京时间 · ${from.replaceAll("-", "/")} — ${to.replaceAll("-", "/")} · 含起止当天` : snapshot?.since ? `北京时间 · ${clock(snapshot.since, true)} 起${range === "week" ? "（周一）" : ""}` : "全部历史 · 包含时间未记录的请求";
 	return <div className="observatory">
@@ -218,6 +336,8 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 			<Link href={overviewHref} className="obs-brand" aria-label="Model Observatory 首页"><span className="obs-brand-icon"><Image src="/app.ico?v=silver-orbit-1" width={39} height={39} alt="" unoptimized /></span><span>Model<span>Observatory</span></span></Link>
 			<nav aria-label="主导航">{([
 				{ id: "models", href: overviewHref, icon: Layers3, label: "模型总览" },
+				{ id: "projects", href: projectsHref, icon: Folder, label: "项目" },
+				{ id: "sessions", href: sessionsHref, icon: MessageSquare, label: "会话" },
 				{ id: "requests", href: requestsHref, icon: Activity, label: "请求流水" },
 				{ id: "coverage", href: "/tools", icon: Radio, label: "接入与口径" },
 			] as const).map((item) => <Link key={item.id} href={item.href} className={cn("obs-nav-link", view === item.id && "is-active")} aria-current={view === item.id ? "page" : undefined}><item.icon size={17} />{item.label}</Link>)}</nav>
@@ -234,7 +354,22 @@ export function Observatory({ view = "models", initialModel = "", initialRange =
 
 		{snapshot?.collection?.paused && <div className="obs-error-banner" role="status"><span>采集已暂停，历史已保留。恢复后补读暂停期间的原始记录。</span><button disabled={resuming} onClick={resumeCollection}>{resuming ? "补读中…" : "恢复采集"}<Play size={13} /></button></div>}
 		{error && <div className="obs-error-banner" role="alert">{error}<button onClick={() => setRefresh((n) => n + 1)}>重试 <RefreshCw size={13} /></button></div>}
-		{!snapshot ? <div className="obs-loading" role="status"><Radio size={30} /><h2>{error ? "等待本地采集恢复" : "正在读取本机模型记录"}</h2><p>首次读取需要扫描原始日志。只提取模型与用量，不提取对话内容。</p><div className="obs-loading-lines"><i /><i /><i /></div></div> : view === "coverage" ? <CoverageView snapshot={snapshot} onRulesChanged={() => setRefresh((n) => n + 1)} /> : <>
+		{!snapshot ? <div className="obs-loading" role="status"><Radio size={30} /><h2>{error ? "等待本地采集恢复" : "正在读取本机模型记录"}</h2><p>首次读取需要扫描原始日志。只提取模型与用量，不提取对话内容。</p><div className="obs-loading-lines"><i /><i /><i /></div></div> : view === "coverage" ? <CoverageView snapshot={snapshot} onRulesChanged={() => setRefresh((n) => n + 1)} /> : view === "projects" || view === "sessions" ? <AttributionView
+			view={view}
+			snapshot={snapshot}
+			rangeParams={rangeParams}
+			sort={attributionSort}
+			selectedKey={view === "projects" ? projectFilter : sessionFilter}
+			contextKey={view === "projects" ? sessionFilter : projectFilter}
+			busy={busy}
+			error={error}
+			rangeMatches={rangeMatches}
+			onSort={chooseAttributionSort}
+			onSelect={view === "projects" ? selectProject : selectSession}
+			onClearSelection={clearAttributionFilters}
+			onRetry={() => setRefresh((n) => n + 1)}
+		/> : <>
+		{view === "requests" && (projectFilter || sessionFilter || unknownFilter) && <div className="obs-attribution-filter" role="group" aria-label="归属筛选"><span>归属筛选</span>{projectFilter && <code>项目：{snapshot.selection?.projects[0]?.label ?? "已选择"}</code>}{sessionFilter && <code>会话：{snapshot.selection?.sessions[0]?.label ?? "已选择"}</code>}{unknownFilter && <code>{unknownFilter === "project" ? "未知项目" : unknownFilter === "session" ? "未知会话" : "项目与会话均未知"}</code>}<button className="obs-text-button" onClick={clearAttributionFilters}>清除归属筛选 <X size={13} /></button></div>}
 		{view === "models" && <section className="obs-stat-strip" aria-label="模型统计"><div><span><Activity size={14} aria-hidden="true" />已观测请求</span><strong data-testid="request-total">{number(total!.requests)}<small>次</small></strong>{total!.turnRequests > 0 && <p>含 {number(total!.turnRequests)} 轮会话请求，非底层调用总数</p>}</div><div><span><Zap size={14} aria-hidden="true" />已记录 Token</span><strong>{total!.inputRequests || total!.outputRequests ? compact(total!.input + total!.output) : "未记录"}</strong><p>输入 {tokens(total!.inputRequests ? total!.input : null)} <span>/</span> 输出 {tokens(total!.outputRequests ? total!.output : null)}</p>{total!.tokenRequests < total!.requests && <p>{number(total!.tokenRequests)}/{number(total!.requests)} 条完整用量</p>}</div><div><span><Layers3 size={14} aria-hidden="true" />已记录缓存读取</span><strong>{total!.cacheRequests ? compact(total!.cache) : "未记录"}</strong><p>已包含在输入中，不重复相加</p>{total!.cacheRequests < total!.requests && <p>{number(total!.cacheRequests)}/{number(total!.requests)} 条报告缓存</p>}</div></section>}
 
 		<div className="obs-ledger-heading"><div><h2>{view === "models" ? "模型账本" : modelFilter || clientFilter || query ? "筛选结果" : "请求记录"}</h2><span>{number(view === "models" ? modelRows.length : snapshot.requestCount)} {view === "models" ? "个模型" : "条记录"}</span></div><label className="obs-search"><Search size={15} /><input aria-label={view === "models" ? "搜索模型或工具" : "搜索请求"} placeholder={view === "models" ? "搜索模型、工具…" : "搜索模型、工具、路由…"} value={query} onChange={(e) => { setQuery(e.target.value); setPage(0); }} />{query && <button aria-label="清除搜索" onClick={() => setQuery("")}><X size={13} /></button>}</label></div>

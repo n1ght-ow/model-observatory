@@ -42,12 +42,18 @@ Windows 安装包尚未使用商业代码签名证书，系统可能提示未知
 
 ## 页面
 
+调用活动图支持悬停、点击或键盘聚焦时段，显示北京时间起止、请求总数、已记录 Token，以及该时段各具体模型的请求数和输入 / 输出用量。明细随当前图表指标排序，模型较多时可在浮层内滚动；左右方向键切换时段，Esc 关闭。缺失用量显示“未记录”或“—”，部分覆盖标明完整用量请求数，缓存不重复计入 Token；空时段明确显示没有已观测请求。浮层沿用黑白主题并自动避让窗口边缘。
+
 - `/`：模型总览，独占全局请求、Token 和缓存统计；具体模型账本位于活动趋势之前。展开模型可核对工具分布、原始名称和模型身份依据，并钻取请求。配置名称明确标记，不代表响应已验证。
-- `/requests`：逐请求流水，提供时间 / 模型 / 工具 / 关键词筛选、结果条数、50 条分页、原始证据和 CSV 导出。不重复总览统计；“导出筛选结果”导出全部匹配记录，不局限于当前页。
+- `/projects`：项目账本，按当前时间范围内的请求数或已记录 Token 排序。项目以可靠来源、规范化路径或来源稳定 `project_id` 区分，同名不同路径不会合并；列表显示涉及模型数与最近活动，详情列出当前项目下的最终模型和关联会话，并提供未知项目入口。
+- `/sessions`：会话账本，显示可靠会话 ID、来源 / 工具、项目归属、请求数、已记录 Token、涉及模型数和范围内最近活动。详情补充范围内首末活动、完整用量覆盖、归属依据及最终模型，并提供未知会话入口。
+- `/requests`：逐请求流水，提供时间 / 模型 / 工具 / 项目 / 会话 / 未知归属 / 关键词筛选、结果条数、50 条分页、原始证据和 CSV 导出。不重复总览统计；“导出筛选结果”导出全部匹配记录，不局限于当前页。
 - `/tools`：当前来源状态与历史累计观测、合并和待核对证据，包含模型命名规则及可展开的统计口径。异常、待接入、暂无记录来源排在正常来源之前。此页不显示时间筛选和请求导出，所有来源数量与核对数量明确为历史累计。
 - `/models`：重定向到模型总览。
 
-时间筛选提供「今天 / 这周 / 这月 / 全部 / 任意时间」。默认按北京时间的今天统计；这周从周一零点、这月从每月 1 日零点开始。任意时间以按钮旁的悬浮面板显示，不占用页面布局；使用黑白月历连续点选开始与结束日期并高亮区间，也可直接输入 YYYY-MM-DD 或切换年月。点击“应用”后生效，按北京时间包含起止当天；点外部、取消或按 Esc 保留原范围，开始日期晚于结束日期时提示并禁用应用。日历支持方向键、Home / End 及 PageUp / PageDown。总览与流水共享当前桌面窗口的时间范围，经过接入页后返回仍保留；模型钻取与 CSV 导出携带相同的时间条件，URL 中的明确范围（`range=custom&from=YYYY-MM-DD&to=YYYY-MM-DD`）优先于窗口记忆。切换时间会同步更新 URL 并重置分页，界面显示实际范围；全部历史包含原始时间缺失的记录，其他范围排除缺少时间的请求和未来记录。总览不再重复显示最近请求列表、全局工具分布图或来源接入数量，来源信息在模型详情与接入页按各自任务呈现。
+项目与会话页面只汇总当前时间范围内的请求；会话跨出范围时，详情也不会补入范围外请求。项目、会话与模型筛选可以组合，并从账本或详情进入请求流水。项目 / 会话 URL 保留 `range` / `from` / `to`、`sort`、`project`、`session`，进入流水时继续携带 `range` 和适用的 `project` / `session` / `model` / `unknown` 筛选。所选 opaque key 由接口原样传递，界面不拼接或解析；刷新、前进后退和跨页返回沿用这些参数。未知项目与未知会话分别提供入口。
+
+时间筛选提供「今天 / 这周 / 这月 / 全部 / 任意时间」。默认按北京时间的今天统计；这周从周一零点、这月从每月 1 日零点开始。任意时间以按钮旁的悬浮面板显示，不占用页面布局；使用黑白月历连续点选开始与结束日期并高亮区间，也可直接输入 YYYY-MM-DD 或切换年月。点击“应用”后生效，按北京时间包含起止当天；点外部、取消或按 Esc 保留原范围，开始日期晚于结束日期时提示并禁用应用。日历支持方向键、Home / End 及 PageUp / PageDown。五种范围在总览、请求流水、项目与会话账本间共享当前桌面窗口的选择，经过接入页后返回仍保留；模型钻取与 CSV 导出携带相同的时间条件，URL 中的明确范围（`range=custom&from=YYYY-MM-DD&to=YYYY-MM-DD`）优先于窗口记忆。切换时间会同步更新 URL 并重置分页，界面显示实际范围；全部历史包含原始时间缺失的记录，其他范围排除缺少时间的请求和未来记录。总览不再重复显示最近请求列表、全局工具分布图或来源接入数量，来源信息在模型详情与接入页按各自任务呈现。
 
 每次界面请求完成 5 秒后再次刷新，避免请求重叠；窗口隐藏或最小化时停止界面轮询，显示后恢复。主进程继续每 15 秒采集；界面轮询和切换筛选只查询账本，不再额外扫描原始日志。首次读取仍立即补采，已有历史先显示，没有历史时等待首次采集。显式采集与恢复采集仍可立即补读。顶部唯一状态区集中显示后台采集、补读、刷新时间、暂停刷新及手动刷新；自动刷新偏好在栏目间保留，暂停刷新仍允许手动刷新或切换筛选。刷新失败会保留上次读数并明确提示。更新时间使用实际入库时间。
 
@@ -57,11 +63,13 @@ Windows 安装包尚未使用商业代码签名证书，系统可能提示未知
 
 Windows 静态导出的分段预取文件会在构建时统一为客户端要求的名称；自动验收会检查导航和资源没有 404。`/models` 由轻量服务重定向到首页，无需额外页面实现。
 
+桌面导航白名单包含项目和会话页面，支持栏目切换、完整页面跳转和刷新；外部地址和 API 地址仍不能作为界面导航目标。
+
 ## 活跃数据链路
 
 ```text
 原始本地记录 / 统一事件
-  -> readers.ts：来源适配和 Token 定义
+  -> readers.ts：来源适配、归属投影和 Token 定义
   -> jsonl.ts：只提交完整 JSON 行，增量读取
   -> archive.ts：事务保存原始观测和暂停状态，保留历史
   -> ledger.ts：请求归一、一对一匹配、具体模型汇总
@@ -72,6 +80,12 @@ Windows 静态导出的分段预取文件会在构建时统一为客户端要求
 `src/lib/observatory/` 是唯一统计核心。SQLite 读取缓存在本进程复用，并通过 `data_version` 感知其他进程写入；未变化的观测跳过重复 SQL。原始记录在增量读取、归档和查询间共享不可变对象，修订使用新对象；不再长期保留每条记录的 JSON 字符串副本。本进程入库后直接更新内存账本，不重新读取解析整库；启动或其他连接写入后再通过 SQLite 迭代器加载。归一、去重及排序结果在记录或命名规则变化时更新，时间范围仍按当前时间筛选。查询结果会一直复用，直到账本、覆盖、命名规则或时间窗口里的记录集合发生变化，而不是每秒重建一次。界面按当前视图取数：总览只要最近 5 条，流水按 50 条分页，接入页不重复拉取流水；导出仍包含全部筛选结果。JSONL 在成功入库后释放已解析行，保留文件游标和解析状态，之后只读新增字节；文件被替换或变短后从头读取。DSH 按帧或行增量读取，工具输出等无关长行在确认类型后即丢弃，不再把整个会话文件放进内存。SQLite 使用有限页缓存且不把账本文件映射进进程。DSH 解码位于 `sources/dsh.ts`，文件遍历位于 `files.ts`，Grok 直接使用同一套增量 JSONL 读取。旧 `metrics/`、`collectors/`、CC Switch 导入、账户额度、旧仪表盘及未使用的组件库已经移除。
 
 查询和导出统一使用 `/api/observatory`，数据接入和命名规则分别使用其 `/events`、`/aliases` 子路径；`/api/health` 供桌面进程探测。已删除旧 `/api/metrics`、`/api/sources`、`/api/command-code`，旧地址现在返回 404。
+
+### 归属接口
+
+`GET /api/observatory` 的归属结果分两层。`snapshot.attribution` 包含当前范围的项目 / 会话概览、分别的 `unknownProjects` / `unknownSessions` 和 `coverage`；`coverage` 中的已知 / 未知请求数与完整用量请求数描述整个时间范围，不随归属筛选重算。`snapshot.selection` 只在带归属筛选或详情视图时出现，包含 `filters` 以及筛选后的 `totals`、`models`、`projects`、`sessions`、`unknownProjects` 和 `unknownSessions`。顶层 `snapshot.totals` 与 `snapshot.models` 仍保持整个时间范围，不因归属筛选变为子集；筛选后的流水条数见 `requestCount`。
+
+`view` 支持 `summary|projects|sessions|project|session|unknown|full`。没有归属筛选且未指定 `view` 时默认 `summary`，该视图不携带完整的 `projects` / `sessions` 明细；`projects`、`sessions` 返回对应账本，`project`、`session`、`unknown` 返回筛选详情，`full` 返回完整归属概览。`project=<opaque key>|unknown` 与 `session=<opaque key>|unknown` 分别选择已知键或未知维度，`unknown=project|session|both` 选择未知条件，同时出现时按 AND 组合。只带归属筛选时可省略 `view`，接口按 `project`、`session`、`unknown` 的顺序推断详情视图。
 
 DSH 已入库的解码记录也会释放，保留独立序号、文件游标及未完成帧的读取位置。JSONL 的备用请求 ID 使用跨采集保留的序号，释放记录不会覆盖旧请求；压缩帧的校验尾部未写完时等待下次采集。未变化的 SQLite 元数据重读不会重建账本；后台提交使旧账本失效时立即释放查询缓存，窗口隐藏期间也不长期保留旧修订。ZCode / OpenCode 按 SQLite 迭代器转换记录，入库后只保留数据库与 WAL 签名，未变化时跳过全量记录重放。CSV 按 128 条分批输出并响应下载取消，避免同时构造整份导出内容的多个副本。大文件采集不再将整个事件数组展开为函数参数，避免记录量超过 JavaScript 参数上限时丢失整个来源。
 
@@ -85,23 +99,33 @@ Codex 增量读取最多检查行首 512 字节，在明确识别为响应正文
 
 ## 原始采集来源
 
-| 来源 | 本地证据 | 主要边界 |
-| --- | --- | --- |
-| Cursor | `%APPDATA%/Cursor/User/globalStorage/state.vscdb` 的请求元数据 | 按 requestId 合并分叉副本；只计有响应的会话请求轮次，不能代表内部逐步模型调用。模型取自当轮配置，Token 保持未知；不读取对话和认证字段 |
-| Codex CLI / Desktop | `~/.codex/sessions` 和 `archived_sessions` 的 token_count | 跳过重复累计快照；模型取自当次 turn_context，未确认响应模型时标记 configured |
-| Codex Router | `~/.codex/codex-router/usage-events.jsonl` | 优先 responseModel，否则使用日志 model；不猜测未识别的调用工具 |
-| DeepSeek Harness | `~/.dsh/sessions` 的原始压缩 usage | 复用文件格式解码，不采用 CC Switch 导入 |
-| pi | `~/.pi/agent/sessions` | 按原始 message id 计数，输入包含 cacheRead/cacheWrite |
-| ZCode | `~/.zcode/cli/db/db.sqlite` 的 model_usage | 每个实际 attempt 分别计数；读取 completed/error/cancelled；input_tokens 已含缓存 |
-| OpenCode | `~/.local/share/opencode/opencode.db` 的 assistant usage | 输入加缓存，输出加独立 reasoning；只提取用量元数据 |
-| Claude Code | `~/.claude/projects` 的 assistant message | 相同 message id 的流式更新只计一次；输入加缓存读写 |
-| Command Code CLI | `~/.commandcode/projects` 的原始 message usage | 读取逐请求，不把账户额度当调用次数 |
-| Grok CLI | `~/.grok/sessions` 的本地记录 | 缺少可靠调用时间与 Token，仅在全部历史计数；用量保持未知 |
-| ChatGPT 桌面端 / 网页 | 尚无逐请求 usage 接口 | 明确显示待接入；普通聊天不会自动写入 Codex/API 日志 |
+| 来源 | 本地证据 | 结构化归属字段 | 主要边界 |
+| --- | --- | --- | --- |
+| Cursor | `%APPDATA%/Cursor/User/globalStorage/state.vscdb` 的请求元数据 | 会话：`composerData:<composer>` / `bubbleId:<composer>:*` 中的 composer；项目、父会话：未知 | 按 requestId 合并分叉副本；只计有响应的会话请求轮次，不能代表内部逐步模型调用。模型取自当轮配置，Token 保持未知；不读取对话和认证字段 |
+| Codex CLI / Desktop | `~/.codex/sessions` 和 `archived_sessions` 的 token_count | 会话：`session_meta.payload.id`；项目：`session_meta.payload.cwd` 或 `turn_context.payload.cwd`；父会话：`session_meta.payload.source.subagent.spawn.parent_thread_id` | 跳过重复累计快照；模型取自当次 turn_context，未确认响应模型时标记 configured。事件工具仍区分 CLI / Desktop，归属命名空间统一为 Codex |
+| Codex Router | `~/.codex/codex-router/usage-events.jsonl` | 项目、会话、父会话：`source-unsupported` | 优先 responseModel，否则使用日志 model；不猜测未识别的调用工具 |
+| DeepSeek Harness | `~/.dsh/sessions` 的原始压缩 usage | 会话：session header `id`；项目：session header `cwd`；父会话：未投影 | 复用文件格式解码，不采用 CC Switch 导入。文件路径 fallback 只稳定原请求 ID，不作为可靠 session |
+| pi | `~/.pi/agent/sessions` | 会话：session header `id`；项目：session header `cwd`；父会话：未知 | 按原始 message id 计数，输入包含 cacheRead/cacheWrite。`parentSession` 通常保存父日志路径，不把路径伪造为父 session ID |
+| ZCode | `~/.zcode/cli/db/db.sqlite` 的 model_usage | `PRAGMA table_info` 后读取 `model_usage.session_id`、`session.directory`、`session.project_id`、`session.parent_id` | 每个实际 attempt 分别计数；读取 completed/error/cancelled；input_tokens 已含缓存 |
+| OpenCode | `~/.local/share/opencode/opencode.db` 的 assistant usage | `PRAGMA table_info` 后读取 `message.session_id`、`session.directory`、`session.project_id`、`session.parent_id` | 输入加缓存，输出加独立 reasoning；只提取用量和上述归属元数据 |
+| Claude Code | `~/.claude/projects` 的 assistant message | 会话：assistant row `sessionId`；项目：assistant row `cwd`；父会话：未知 | 相同 message id 的流式更新只计一次；输入加缓存读写 |
+| Command Code CLI | `~/.commandcode/projects` 的原始 message usage | 项目、会话、父会话：`source-unsupported` | 读取逐请求，不把账户额度当调用次数 |
+| Grok CLI | `~/.grok/sessions` 的本地记录 | 项目、会话、父会话：`source-unsupported` | 缺少可靠调用时间与 Token，仅在全部历史计数；用量保持未知 |
+| ChatGPT 桌面端 / 网页 | 尚无逐请求 usage 接口 | 项目、会话：`source-unsupported` | 明确显示待接入；普通聊天不会自动写入 Codex/API 日志 |
 
 SQLite 的主文件和 WAL 均参与缓存失效。JSONL 只解析已完成的行，半行等待下次刷新；文件截短后重新读取。来源读取失败只影响该来源，下次采集重试。
 
 本系统是**原始记录聚合器**，不是全机网络拦截器。无法读取的工具、封闭客户端加密流量、未落日志的失败与内部调用不应被声称为已覆盖。上游隐藏模型或使用不透明别名时，不可能仅凭本地配置确认真正执行的权重。页面保留证据与未验证状态。
+
+### 归属、隐私与未知
+
+采集器只投影上表列出的归属字段。JSONL 不提取提示词、响应正文、工具参数或认证数据；SQLite 先通过 `PRAGMA table_info` 确认列，再只选择 ID、会话关联、工作目录、项目 ID、父会话 ID 和既有用量元数据。Cursor 的对话正文、认证表和未列入白名单的键、OpenCode / ZCode 的消息正文、标题、摘要及费用列均不读取。项目可由可靠 `cwd` 形成路径键，也可由来源提供的稳定 `project_id` 独立形成项目键；同名但路径不同的项目不合并。会话键绑定来源、工具与稳定会话 ID，不同来源的相同会话 ID 不合并。
+
+项目、会话和父会话分别报告 `known / missing / unsupported / invalid / conflict`；未知项目与未知会话也分别计数。字段存在但当前记录未提供值时为 `missing / not-provided`；安装版本或旧 schema 明确没有对应列、或来源没有这类字段时为 `unsupported / source-unsupported`；字段类型错误为 `invalid`；同一请求得到不同可靠值时为 `conflict`，并保留全部 candidates。缺失父会话不会抹掉已知会话，已知项目和未知会话也不会互相覆盖。旧历史若没有 attribution，会显示为 legacy 未知，不能仅凭同一请求推测其项目或会话。
+
+本功能不计算费用。OpenCode / ZCode 数据库中的 cost 或账户额度不作为费用结论，也不参与请求计数；缺失 Token 继续显示未记录。
+
+正常启动仍会按稳定请求 ID 扫描仍存在的源日志并补读退出期间的请求，已入库事件会获得新读取器能投影的归属元数据。源日志已删除、轮转后不可得，或原始记录从未保存 cwd / 会话字段时，旧历史无法事后还原，只能保留为未知。SQLite 的 session 关联只有在 ID 唯一时才投影；异常 schema 出现重复 session ID 时，请求行仍只计一次，项目与父会话标记为 `invalid / invalid-id`，不能任意选择映射，也不能放大用量行数。
 
 ## 计数和模型身份
 
@@ -147,6 +171,15 @@ npm run test:ui
 npm run test:desktop
 ```
 
+归属改动的补充验收可单独运行：
+
+```powershell
+node --test tests/attribution-readers.unit.cjs
+node tests/attribution-ui.e2e.mjs
+```
+
+后者使用 `npm run desktop:build` 生成的打包 EXE 和隔离 fixture，普通浏览器不替代桌面验收。`attribution-readers` 检查来源投影、冲突与旧 schema 边界；`attribution-ui` 检查归属 API、项目 / 会话账本、组合筛选、跨范围详情、未知入口及 390px / 320px 布局。
+
 单元测试同时验证轻量服务的桌面会话、静态资源、请求体限额、同源修改、分页、完整 CSV 和命名规则；并覆盖具体模型合计、版本与命名空间、别名、重复重传、一对一证据匹配、歧义隔离、缓存口径、时区、未知值、增量 JSONL 与截断恢复，以及独立进程退出、离线补读、暂停保留与源文件删除后的历史保留。界面验收直接启动打包 EXE，使用真实本地账本的隔离副本；写命名规则的 UI 测试拦截为测试响应，不改变真实规则和统计。桌面验收复制真实打包程序到带中文和空格的临时目录，在隔离用户目录且 PATH 不包含 Node 的环境中启动；验证原界面、本地字体、外部请求阻断、CSV、窗口缩放 / 最小化 / 最大化、关闭到托盘后继续采集、单实例唤回、服务和界面进程意外退出重试、无重复采集进程、隐藏时停止界面轮询、损坏设置容错、命令正常退出、端口冲突和历史持久保存。测试不修改真实历史和命名规则。
 
 性能复测可运行 `node tests/desktop.performance.mjs <label> <exe> <fixture>`，fixture 目录包含脱离真实用户目录的 `history.sqlite`、`events.jsonl` 和可选 `aliases.json`。报告在 `logs/performance/`，方法和限制见 `docs/desktop-evidence.md`；测试仅操作隔离副本。
@@ -159,6 +192,6 @@ npm run test:desktop
 
 ### Cursor 本地采集
 
-Cursor 保留的每个会话请求 ID 计一条，思考、工具步骤及分叉副本不会重复计数。总览、流水证据和 CSV 明确标注会话轮次；它与其他来源的逐模型调用证据粒度不同，合计不是完整底层调用数。不会拿当前会话的最新模型倒填旧请求，也不会把默认 `tokenCount: {inputTokens: 0, outputTokens: 0}` 当成真实零用量。
+Cursor 保留的每个会话请求 ID 计一条，思考、工具步骤及分叉副本不会重复计数。composer 作为会话归属；同一 requestId 若出现在多个 composer，请求仍只计一条，但会话归属标记为冲突并保留候选 composer。总览、流水证据和 CSV 明确标注会话轮次；它与其他来源的逐模型调用证据粒度不同，合计不是完整底层调用数。不会拿当前会话的最新模型倒填旧请求，也不会把默认 `tokenCount: {inputTokens: 0, outputTokens: 0}` 当成真实零用量。
 
-采集器只通过 SQLite JSON 投影读取 ID、顺序、时间、模型配置与消息类型，不提取提示词、响应正文、代码或认证字段。数据库和 WAL 的变化都会触发重读；只读失败显示读取异常，保留已采集历史。默认自动定位 Cursor 用户数据目录；自定义配置可在启动服务前设置 `CURSOR_USER_DATA_DIR`，指向包含 `User` 子目录的 Cursor 数据目录。
+采集器只通过 SQLite JSON 投影读取请求 ID、composer 会话键、顺序、时间、模型配置与消息类型，不提取提示词、响应正文、代码或认证字段。数据库和 WAL 的变化都会触发重读；只读失败显示读取异常，保留已采集历史。默认自动定位 Cursor 用户数据目录；自定义配置可在启动服务前设置 `CURSOR_USER_DATA_DIR`，指向包含 `User` 子目录的 Cursor 数据目录。

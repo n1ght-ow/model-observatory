@@ -116,3 +116,97 @@ test("lean desktop server preserves API, CSV and aliases while limiting bodies a
 		} catch (error) { throw new Error(error.stderr || error.message); }
 	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); }
 });
+
+test("attribution API projects and sessions keep typed model lists while summary and request filters stay bounded", async () => {
+	const dir = await mkdtemp(path.join(tmpdir(), "observatory-attribution-http-"));
+	const worker = `
+		const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),ts=require('typescript');
+		require.extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(fs.readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,f);
+		const {ObservationArchive}=require('./src/lib/observatory/archive.ts');
+		const {projectAttribution,sessionAttribution,mergeAttribution}=require('./src/lib/observatory/attribution.ts');
+		const {createDesktopServer}=require('./src/server/http.ts');
+		const root=process.env.OBSERVATORY_DATA_DIR,assets=path.join(root,'ui'),token='fixture-desktop-session';
+		fs.mkdirSync(path.join(assets,'_next','static'),{recursive:true});
+		fs.writeFileSync(path.join(assets,'index.html'),'<h1>fixture</h1>');
+		const baseAt=Date.parse('2026-10-14T05:00:00Z');
+		const source='fixture-source',client='fixture-client';
+		const project=(suffix,s=source)=>projectAttribution({source:s,path:'C:\\\\work\\\\p'+suffix});
+		const session=(id,c=client,s=source)=>sessionAttribution({source:s,client:c,id});
+		const make=(id,i,changes={})=>({id,at:new Date(baseAt-i*60000).toISOString(),model:'model-'+(i%7),rawModel:'model-'+(i%7),client,upstream:'fixture',input:10+i,output:2+i%7,cache:null,status:'unknown',duration:null,identity:'reported',evidence:[{id,source,kind:'session'}],attribution:{project:project(i%10),session:session('s'+(i%5))},...changes});
+		const rows=Array.from({length:120},(_,i)=>make('row-'+i,i));
+		const alpha=project('0'),beta=project('beta','other-source'),projectConflict=mergeAttribution(alpha,beta);
+		rows.push(make('alpha-native',0,{requestId:'physical-duplicate',attribution:{project:alpha,session:session('s0')}}));
+		rows.push({...make('router-copy',0,{client:'未识别工具',attribution:{project:alpha,session:session('s0')}}),requestId:'physical-duplicate',evidence:[{id:'router-copy',source:'router',kind:'router'}]});
+		rows.push(make('same-session-other-source',2,{client:'other-client',attribution:{project:beta,session:session('s0','other-client','other-source')}}));
+		rows.push(make('project-missing',3,{attribution:{project:projectAttribution({source:'router'}),session:session('known-session')}}));
+		rows.push(make('both-conflict',4,{attribution:{project:projectConflict,session:sessionAttribution({source:'router'})}}));
+		const archive=new ObservationArchive(path.join(root,'history.sqlite'));archive.commit(rows,[]);archive.close();
+		const server=createDesktopServer(assets,token);
+		(async()=>{
+			await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+server.address().port;
+			const request=async(suffix)=>{const started=performance.now();const response=await fetch(base+'/api/observatory'+suffix);const text=await response.text();const data=(response.headers.get('content-type')||'').includes('json')?JSON.parse(text):null;return {response,text,data,ms:performance.now()-started,bytes:Buffer.byteLength(text)}};
+			try{
+				const summary=await request('?range=all');
+				assert.equal(summary.data.totals.requests,124);
+				assert.equal(summary.data.attribution.projects.length,0);
+				assert.equal(summary.data.attribution.sessions.length,0);
+				assert.equal(summary.data.attribution.coverage.projects.knownRequests+summary.data.attribution.coverage.projects.unknownRequests,124);
+				assert.equal(summary.data.attribution.coverage.projects.unknownRequests,2);
+				assert.ok(summary.bytes<150000,'summary response should not embed every project/session/model detail');
+				assert.ok(summary.ms<5000,'summary query should remain bounded');
+				assert.equal('selection' in summary.data,false);
+
+				const projects=await request('?range=all&view=projects&limit=0');
+				assert.equal(projects.data.attribution.projects.length,11);
+				assert.equal(projects.data.attribution.sessions.length,0);
+				assert.ok(projects.data.attribution.projects.every(project=>Array.isArray(project.models)&&Array.isArray(project.sessions)));
+				const alphaSummary=projects.data.attribution.projects.find(project=>project.key===alpha.key);
+				assert.equal(alphaSummary.totals.requests,13);
+				assert.equal(alphaSummary.modelCount,alphaSummary.models.length);
+				assert.equal(alphaSummary.sessionCount,alphaSummary.sessions.length);
+				assert.equal(alphaSummary.models.reduce((sum,model)=>sum+model.requests,0),alphaSummary.totals.requests);
+
+				const sessions=await request('?range=all&view=sessions&limit=0');
+				assert.equal(sessions.data.attribution.sessions.length,7);
+				assert.ok(sessions.data.attribution.sessions.every(session=>Array.isArray(session.models)));
+				assert.equal(new Set(sessions.data.attribution.sessions.map(session=>session.key)).size,7);
+				assert.deepEqual(sessions.data.attribution.sessions.filter(session=>session.id==='s0').map(session=>session.client).sort(),[client,'other-client']);
+
+				const detail=await request('?range=all&view=project&limit=0&project='+encodeURIComponent(alpha.key));
+				assert.equal(detail.data.selection.totals.requests,13);
+				assert.equal(detail.data.selection.projects[0].key,alpha.key);
+				assert.ok(detail.data.selection.projects[0].models.length>1);
+				const combined=await request('?range=all&view=project&limit=0&project='+encodeURIComponent(alpha.key)+'&session='+encodeURIComponent(session('s0').key));
+				assert.equal(combined.data.selection.totals.requests,13);
+
+				const sessionKey=session('s0').key;
+				const sessionDetail=await request('?range=all&view=session&limit=0&session='+encodeURIComponent(sessionKey));
+				assert.equal(sessionDetail.data.selection.sessions.length,1);
+				assert.equal(sessionDetail.data.selection.sessions[0].key,sessionKey);
+				assert.equal(sessionDetail.data.selection.sessions[0].client,client);
+				assert.equal(sessionDetail.data.selection.sessions[0].totals.requests,25);
+				assert.ok(sessionDetail.data.selection.sessions[0].models.length>1);
+				assert.equal(sessionDetail.data.selection.sessions[0].models.reduce((sum,model)=>sum+model.requests,0),25);
+
+				const unknown=await request('?range=all&unknown=project&limit=0');
+				assert.equal(unknown.data.requestCount,2);
+				assert.equal(unknown.data.selection.unknownProjects.reduce((sum,bucket)=>sum+bucket.totals.requests,0),2);
+
+				const requestOnly=await request('?range=all&model=model-0&limit=0');
+				assert.equal('selection' in requestOnly.data,false);
+				assert.equal(requestOnly.data.attribution.projects.length,0);
+				assert.equal(requestOnly.data.attribution.sessions.length,0);
+
+				const csv=await request('?range=all&format=csv&project='+encodeURIComponent(alpha.key));
+				assert.match(csv.text,/项目稳定标识/);
+				assert.match(csv.text,/project-path:C:\\/work\\/p0/);
+				assert.equal(csv.text.trim().split('\\r\\n').length,14);
+			}finally{await new Promise(resolve=>server.close(resolve));}
+		})().catch(error=>{console.error(error);process.exitCode=1});
+	`;
+	try {
+		try {
+			execFileSync(process.execPath, ["-e", worker], { cwd: path.dirname(__dirname), env: { ...process.env, USERPROFILE: dir, HOME: dir, APPDATA: dir, OBSERVATORY_DATA_DIR: dir }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
+		} catch (error) { throw new Error(error.stderr || error.message); }
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); }
+});

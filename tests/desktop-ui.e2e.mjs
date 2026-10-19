@@ -121,7 +121,70 @@ try {
 		const data = await range(label);
 		assert.ok(data.since && data.requests.every((row) => row.timeKnown !== false && row.at >= data.since));
 	}
-	await range("全部");
+	const activityData = await range("全部");
+	await mkdir("logs/desktop-ui-acceptance", { recursive: true });
+	const activityIndex = activityData.activity.reduce((best, point, index, points) => point.models.length > points[best].models.length ? index : best, 0);
+	const activityPoint = activityData.activity[activityIndex];
+	assert.ok(activityPoint.models.length > 1, "real history should exercise multiple models in a period");
+	const period = page.locator(".obs-chart-period").nth(activityIndex);
+	const tooltip = page.getByRole("tooltip");
+	await period.scrollIntoViewIfNeeded();
+	await period.hover();
+	await tooltip.waitFor();
+	assert.equal(await page.locator(".obs-activity svg title").count(), 0, "the old native tooltip must not cover the model panel");
+	assert.equal(await tooltip.locator("tbody tr").count(), activityPoint.models.length);
+	const formatCount = (n) => new Intl.NumberFormat("zh-CN").format(n);
+	assert.ok((await tooltip.locator(".obs-activity-tooltip-total").innerText()).includes(formatCount(activityPoint.requests)));
+	for (const model of activityPoint.models) {
+		const row = tooltip.locator("tbody tr").filter({ has: page.getByText(model.model, { exact: true }) });
+		assert.equal(await row.locator("td").nth(1).innerText(), formatCount(model.requests));
+		assert.equal(await row.locator("td").nth(2).innerText(), model.inputRequests || model.outputRequests ? formatCount(model.input + model.output) : "—");
+	}
+	await tooltip.hover();
+	await page.waitForTimeout(200);
+	assert.ok(await tooltip.isVisible(), "moving into the panel must keep the model list readable");
+	await page.screenshot({ path: "logs/desktop-ui-acceptance/activity-light.png" });
+	await tooltip.screenshot({ path: "logs/desktop-ui-acceptance/activity-detail-light.png" });
+	await page.keyboard.press("Escape");
+	await tooltip.waitFor({ state: "hidden" });
+	await page.locator(".obs-small-toggle").getByRole("button", { name: "Token", exact: true }).click();
+	await period.focus();
+	await tooltip.waitFor();
+	const byTokens = [...activityPoint.models].sort((a, b) => (b.input + b.output) - (a.input + a.output) || b.requests - a.requests || a.model.localeCompare(b.model));
+	assert.deepEqual(await tooltip.locator("tbody td:first-child > strong").allTextContents(), byTokens.map((model) => model.model));
+	await page.keyboard.press("Escape");
+	await page.locator(".obs-small-toggle").getByRole("button", { name: "请求", exact: true }).click();
+	await page.getByRole("button", { name: "切换深色", exact: true }).click();
+	await period.focus();
+	await tooltip.waitFor();
+	await tooltip.screenshot({ path: "logs/desktop-ui-acceptance/activity-detail-dark.png" });
+	await verifyMonochrome();
+	for (const width of [390, 320]) {
+		await resize({ width, height: 844 });
+		await period.scrollIntoViewIfNeeded();
+		await period.click();
+		await tooltip.waitFor();
+		const box = await tooltip.boundingBox();
+		assert.ok(box.x >= 15 && box.x + box.width <= width - 15, "tooltip must stay inside the narrow viewport");
+		assert.ok(box.y >= 15 && box.y + box.height <= 829, "tooltip must avoid the top and bottom window edges");
+		assert.equal(await tooltip.evaluate((el) => el.scrollWidth <= el.clientWidth), true);
+		await page.screenshot({ path: `logs/desktop-ui-acceptance/activity-${width}.png` });
+		await page.keyboard.press("Escape");
+	}
+	await resize({ width: 1440, height: 1000 });
+	await period.focus();
+	await period.press("ArrowLeft");
+	assert.equal(await page.locator(".obs-chart-period:focus").count(), 1);
+	await page.keyboard.press("Escape");
+	const emptyIndex = activityData.activity.findIndex((point) => point.requests === 0);
+	if (emptyIndex >= 0) {
+		await page.locator(".obs-chart-period").nth(emptyIndex).focus();
+		await tooltip.getByText("这个时段没有已观测请求").waitFor();
+		await page.keyboard.press("Escape");
+	}
+	await page.getByRole("button", { name: "切换浅色", exact: true }).click();
+	await page.evaluate(() => window.scrollTo(0, 0));
+	record("活动浮层按时段展示模型、请求与真实用量，支持滚动、键盘和窄窗口边缘避让");
 	assert.deepEqual(await page.locator(".obs-range-group button").allTextContents(), ["今天", "这周", "这月", "全部", "任意时间"]);
 	const beforeDates = await page.locator(".obs-stat-strip").boundingBox();
 	await page.getByRole("button", { name: "任意时间", exact: true }).click();
@@ -366,6 +429,17 @@ try {
 	await page.screenshot({ path: "logs/desktop-ui-acceptance/compact.png" });
 	assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
 	await resize({ width: 1440, height: 1000 });
+	await page.getByRole("link", { name: "项目", exact: true }).click();
+	await page.getByRole("heading", { level: 1, name: "项目账本", exact: true }).waitFor();
+	await page.locator('main[aria-busy="false"]').waitFor();
+	assert.equal(new URL(page.url()).pathname, "/projects");
+	await page.screenshot({ path: "logs/desktop-ui-acceptance/projects.png" });
+	await page.getByRole("link", { name: "会话", exact: true }).click();
+	await page.getByRole("heading", { level: 1, name: "会话账本", exact: true }).waitFor();
+	await page.locator('main[aria-busy="false"]').waitFor();
+	assert.equal(new URL(page.url()).pathname, "/sessions");
+	await page.screenshot({ path: "logs/desktop-ui-acceptance/sessions.png" });
+	record("真实历史下项目与会话路由、导航和本地资源");
 	await page.getByRole("link", { name: "接入与口径", exact: true }).click();
 	await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
 	await page.getByText("统计单位", { exact: true }).click();

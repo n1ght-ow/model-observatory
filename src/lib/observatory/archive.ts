@@ -1,7 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Coverage, ModelEvent } from "./types";
+import { freezeEventAttribution, mergeEventAttribution } from "./attribution";
+import type { Coverage, ModelEvent, ModelEventAttribution } from "./types";
 
 export type CollectionState = { paused: boolean; collectedAt: string | null; observations: number };
 
@@ -17,10 +18,14 @@ export class ObservationArchive {
 	private observations?: ModelEvent[];
 	private cachedRead?: { observations: ModelEvent[]; coverage: Coverage[] };
 	private cachedState?: CollectionState;
+	private storedAttributions?: Map<string, ModelEventAttribution>;
+	private storedIds?: Set<string>;
 	private readMeta;
 	private writeMeta;
 	private countRows;
 	private readEvent;
+	private readIds;
+	private readAttributions;
 	private dataVersionQuery;
 	private insertEvent;
 	constructor(path: string) {
@@ -36,6 +41,8 @@ export class ObservationArchive {
 		this.writeMeta = this.db.prepare("INSERT INTO metadata VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
 		this.countRows = this.db.prepare("SELECT count(*) AS n FROM observations");
 		this.readEvent = this.db.prepare("SELECT event FROM observations WHERE id=?");
+		this.readIds = this.db.prepare("SELECT id FROM observations");
+		this.readAttributions = this.db.prepare("SELECT id,json_extract(event,'$.attribution') AS attribution FROM observations WHERE json_type(event,'$.attribution')='object'");
 		this.dataVersionQuery = this.db.prepare("PRAGMA data_version");
 		this.insertEvent = this.db.prepare(`INSERT INTO observations VALUES (?,?) ON CONFLICT(id) DO UPDATE SET event=excluded.event
 			WHERE observations.event<>excluded.event AND
@@ -54,8 +61,27 @@ export class ObservationArchive {
 		if (version !== this.dataVersion) {
 			this.observationRevision++;
 			this.dataVersion = version;
-			this.accepted.clear(); this.strings.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined;
+			this.accepted.clear(); this.strings.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedAttributions = undefined; this.storedIds = undefined;
 		}
+	}
+	private ids() {
+		if (this.storedIds) return this.storedIds;
+		const values = new Set<string>();
+		for (const row of this.readIds.iterate()) values.add(String(row.id));
+		return this.storedIds = values;
+	}
+	private attributions() {
+		if (this.storedAttributions) return this.storedAttributions;
+		const values = new Map<string, ModelEventAttribution>();
+		for (const row of this.readAttributions.iterate()) {
+			try {
+				const attribution = JSON.parse(String(row.attribution)) as ModelEventAttribution;
+				if (attribution && typeof attribution === "object") values.set(String(row.id), freezeEventAttribution(attribution));
+			} catch {
+				// A malformed old row remains readable as unattributed history.
+			}
+		}
+		return this.storedAttributions = values;
 	}
 	state(): CollectionState {
 		this.checkExternalWrites();
@@ -75,17 +101,33 @@ export class ObservationArchive {
 			if (this.value("paused") === "true") { this.db.exec("ROLLBACK"); return false; }
 			// Stream fragments and copied logs can replay an older, shorter revision.
 			let changed = false, recordsChanged = false;
-			for (const event of observations) {
-				const previous = this.accepted.get(event.id);
-				if (previous === event) continue;
-				if (previous && (event.output ?? -1) < (previous.output ?? -1)) continue;
+			const storedAttributions = this.attributions();
+			const storedIds = this.ids();
+			for (const incoming of observations) {
+				let previous = this.accepted.get(incoming.id);
+				if (previous === incoming) continue;
+				if (!previous && storedIds.has(incoming.id)) {
+					const serialized = String(this.readEvent.get(incoming.id)?.event ?? "");
+					if (serialized) {
+						previous = this.decode(serialized);
+						this.accepted.set(incoming.id, previous);
+					}
+				}
+				const attribution = mergeEventAttribution(previous?.attribution, incoming.attribution);
+				// Usage revisions only move forward. Attribution evidence is
+				// independent: a lower-usage replay can still establish a conflict,
+				// so keep the published usage row and revise only its ownership.
+				const advancesUsage = !previous || (incoming.output ?? -1) >= (previous.output ?? -1);
+				const event = attribution
+					? advancesUsage ? { ...incoming, attribution } : { ...previous!, attribution }
+					: advancesUsage ? incoming : previous!;
+				if (previous && JSON.stringify(previous) === JSON.stringify(event)) continue;
 				const serialized = JSON.stringify(event);
-				if (previous && JSON.stringify(previous) === serialized) continue;
-				if (Number(this.insertEvent.run(event.id, serialized).changes)) {
+				const inserted = Number(this.insertEvent.run(event.id, serialized).changes);
+				if (inserted) {
 					this.accepted.set(event.id, this.immutable(event)); this.observations = undefined; changed = true; recordsChanged = true;
-				} else if (!previous) {
-					this.accepted.set(event.id, this.decode(String(this.readEvent.get(event.id)?.event)));
-					this.observations = undefined; changed = true; recordsChanged = true;
+					storedIds.add(event.id);
+					if (attribution) storedAttributions.set(event.id, attribution);
 				}
 			}
 			const encodedCoverage = JSON.stringify(coverage);
@@ -96,13 +138,14 @@ export class ObservationArchive {
 			if (changed) this.cachedRead = undefined;
 			if (recordsChanged) this.observationRevision++;
 			return true;
-		} catch (error) { this.db.exec("ROLLBACK"); this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; throw error; }
+		} catch (error) { this.db.exec("ROLLBACK"); this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedAttributions = undefined; this.storedIds = undefined; throw error; }
 	}
 	private immutable(event: ModelEvent) {
 		// Readers publish revisions as new objects. Sharing these immutable records
 		// avoids retaining both a JSON string and several decoded copies per row.
 		for (const evidence of event.evidence) Object.freeze(evidence);
 		Object.freeze(event.evidence);
+		if (event.attribution) freezeEventAttribution(event.attribution);
 		return Object.freeze(event);
 	}
 	private shared<T extends string>(value: T): T {
@@ -122,6 +165,7 @@ export class ObservationArchive {
 		event.client = this.shared(event.client); event.upstream = this.shared(event.upstream);
 		event.status = this.shared(event.status); event.identity = this.shared(event.identity);
 		if (event.scope) event.scope = this.shared(event.scope);
+		if (event.attribution) freezeEventAttribution(event.attribution);
 		for (const evidence of event.evidence) {
 			evidence.source = this.shared(evidence.source); evidence.kind = this.shared(evidence.kind);
 			if (evidence.id === event.id) evidence.id = event.id;

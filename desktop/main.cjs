@@ -83,7 +83,7 @@ function showWindow() {
 	window.focus();
 }
 function localPage(url) {
-	try { const parsed = new URL(url); return parsed.origin === origin && ["/", "/models", "/requests", "/tools"].includes(parsed.pathname); }
+	try { const parsed = new URL(url); return parsed.origin === origin && ["/", "/models", "/projects", "/sessions", "/requests", "/tools"].includes(parsed.pathname); }
 	catch { return false; }
 }
 function restart() {

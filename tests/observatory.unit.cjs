@@ -78,6 +78,28 @@ test("custom dates include both days, exclude unknown/future time and bound acti
 	assert.ok(makeSnapshot(rows, [], "custom", {}, now, undefined, { from: "1900-01-01", to: "9999-12-31" }).activity.length <= 121);
 });
 
+test("activity model details conserve reconciled usage, preserve unknowns and respect time buckets", () => {
+	const observations = [row("a"), route("mirror"), row("b", { at: "2026-10-14T05:10:00Z", input: null, output: 20, cache: null }), row("unknown", { model: "other-v2", rawModel: "other-v2", input: null, output: null, cache: null }), row("zero", { model: "other-v1", rawModel: "other-v1", input: 0, output: 0, cache: 0 }), row("next", { at: "2026-10-14T06:00:00Z" }), row("untimed", { timeKnown: false })];
+	const snapshot = makeSnapshot(observations, [], "today", {}, now);
+	const point = snapshot.activity.find((p) => p.at === "2026-10-14T05:00:00.000Z");
+	assert.equal(point.until, "2026-10-14T06:00:00.000Z");
+	assert.equal(point.requests, 4);
+	assert.equal(point.tokens, 1120, "cache and mirrored evidence must not add to input + output");
+	assert.equal(point.models.length, 3, "concrete model versions remain separate");
+	assert.deepEqual(point.models.find((m) => m.model === "gpt-6.1-sol"), { model: "gpt-6.1-sol", requests: 2, input: 1000, output: 120, cache: 500, inputRequests: 1, outputRequests: 2, cacheRequests: 1, tokenRequests: 1 });
+	assert.equal(point.models.find((m) => m.model === "other-v2").tokenRequests, 0);
+	assert.equal(point.models.find((m) => m.model === "other-v1").tokenRequests, 1, "reported zero is known usage");
+	for (const p of snapshot.activity) {
+		assert.equal(p.models.reduce((sum, m) => sum + m.requests, 0), p.requests);
+		assert.equal(p.models.reduce((sum, m) => sum + m.input + m.output, 0), p.tokens);
+		assert.ok(p.until > p.at);
+	}
+	assert.equal(snapshot.activity.at(-1).requests, 1, "a boundary request belongs to the next period");
+	assert.equal(snapshot.activity[0].models.length, 0);
+	const custom = makeSnapshot(observations, [], "custom", {}, now, undefined, { from: "2026-10-01", to: "2026-10-14" });
+	assert.ok(custom.activity.every((p) => p.at >= custom.since && p.until <= custom.until));
+});
+
 test("archive caches remain correct after unchanged replay, revised usage and another connection's WAL commit", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "observatory-cache-"));
 	const file = join(dir, "history.sqlite");
@@ -678,4 +700,186 @@ test("Cursor notices WAL-only updates, preserves IDs and retains history after s
 		archive.commit([], [{ ...coverage[0], state: "empty" }]);
 		assert.equal(archive.read().coverage[0].count, 2);
 	} finally { try { db.close(); } catch {} archive?.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+const { projectAttribution, sessionAttribution, mergeAttribution, normalizeProjectPath, makeAttributionSelection } = require("../src/lib/observatory/attribution.ts");
+const withAttribution = (id, changes = {}) => row(id, {
+	attribution: {
+		project: projectAttribution({ source: "codex", id: "project-a" }),
+		session: sessionAttribution({ source: "codex", client: "Codex", id: "session-a" }),
+	},
+	...changes,
+});
+
+test("attribution keys encode every tuple segment and isolate source-scoped IDs", () => {
+	const projectA = projectAttribution({ source: "source:a", id: "b:c" }), projectB = projectAttribution({ source: "source", id: "a:b:c" });
+	assert.notEqual(projectA.key, projectB.key);
+	assert.notEqual(projectAttribution({ source: "one", id: "same" }).key, projectAttribution({ source: "two", id: "same" }).key);
+	const sessions = [
+		sessionAttribution({ source: "event:a", client: "b", id: "c" }),
+		sessionAttribution({ source: "event", client: "a:b", id: "c" }),
+		sessionAttribution({ source: "event:a", client: "a", id: "b:c" }),
+		sessionAttribution({ source: "event:a", client: "b:c", id: "d" }),
+	];
+	assert.equal(new Set(sessions.map((value) => value.key)).size, sessions.length);
+	assert.match(sessions[0].key, /^session:\[/);
+});
+
+test("project paths merge only proven separator/drive spellings and preserve POSIX backslashes", () => {
+	assert.equal(normalizeProjectPath("C:\\work\\repo\\"), "C:/work/repo");
+	assert.equal(normalizeProjectPath("c:/work/repo"), "C:/work/repo");
+	assert.equal(normalizeProjectPath("\\\\server\\share\\repo"), "//server/share/repo");
+	assert.equal(normalizeProjectPath("\\\\?\\UNC\\server\\share\\repo\\"), "//server/share/repo");
+	assert.equal(normalizeProjectPath("\\\\?\\C:\\work\\repo"), "C:/work/repo");
+	assert.equal(normalizeProjectPath("/tmp/a\\b"), "/tmp/a\\b");
+	for (const value of ["\\\\.\\pipe\\fixture", "\\\\?\\Volume{fixture}\\", "\\\\?\\GLOBALROOT\\fixture", "relative/path", "C:relative", "\\\\server"]) assert.equal(normalizeProjectPath(value), null, value);
+	const posixA = projectAttribution({ source: "one", path: "/tmp/a\\b" }), posixB = projectAttribution({ source: "two", path: "/tmp/a/b" });
+	assert.notEqual(posixA.key, posixB.key);
+	const windows = projectAttribution({ source: "one", path: "C:\\Repro" }), windowsOtherSource = projectAttribution({ source: "two", path: "c:/Repro/" });
+	assert.equal(windows.key, windowsOtherSource.key);
+	assert.notEqual(projectAttribution({ source: "one", path: "C:/Repo" }).key, windows.key, "Path case is not folded");
+});
+
+test("attribution merging fills missing evidence and retains contradictory known evidence", () => {
+	const missing = projectAttribution({ source: "router", id: undefined });
+	const known = projectAttribution({ source: "codex", id: "project-a" });
+	assert.equal(mergeAttribution(missing, known).key, known.key);
+	const changed = projectAttribution({ source: "codex", id: "project-b" });
+	const conflict = mergeAttribution(known, changed);
+	assert.equal(conflict.status, "conflict");
+	assert.equal(conflict.key, null);
+	assert.deepEqual(conflict.candidates.map((candidate) => candidate.id).sort(), ["project-a", "project-b"]);
+	assert.equal(mergeAttribution(conflict, known).status, "conflict", "Later single evidence cannot erase a conflict");
+});
+
+test("reconciliation keeps newer usage while retaining ownership evidence from an older revision", () => {
+	const first = withAttribution("same", { requestId: "stream", output: 300, attribution: {
+		project: projectAttribution({ source: "codex", id: "project-a" }),
+		session: sessionAttribution({ source: "codex", client: "Codex", id: "session-a" }),
+	} });
+	const older = withAttribution("older", { requestId: "stream", output: 100, attribution: {
+		project: projectAttribution({ source: "router", id: "project-b" }),
+		session: sessionAttribution({ source: "router", client: "Codex", id: "session-a" }),
+	} });
+	const result = reconcile([first, older]).events[0];
+	assert.equal(result.output, 300);
+	assert.equal(result.attribution.project.status, "conflict");
+	assert.deepEqual(result.attribution.project.candidates.map((candidate) => candidate.id).sort(), ["project-a", "project-b"]);
+});
+
+test("archive cold start and a second connection retain conflicts from lower-usage ownership revisions", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "observatory-attribution-revision-")), file = join(dir, "history.sqlite");
+	const first = new ObservationArchive(file), second = new ObservationArchive(file);
+	try {
+		first.commit([withAttribution("same", { output: 300 })], []);
+		second.commit([withAttribution("same", { output: 100, attribution: {
+			project: projectAttribution({ source: "router", id: "project-b" }),
+			session: sessionAttribution({ source: "router", client: "Codex", id: "session-a" }),
+		} })], []);
+		assert.equal(second.read().observations[0].output, 300);
+		assert.equal(second.read().observations[0].attribution.project.status, "conflict");
+	} finally {
+		first.close();
+		second.close();
+		const reopened = new ObservationArchive(file);
+		try {
+			reopened.commit([withAttribution("same", { output: 50, attribution: {
+				project: projectAttribution({ source: "third", id: "project-c" }),
+				session: sessionAttribution({ source: "third", client: "Codex", id: "session-a" }),
+			} })], []);
+			const stored = reopened.read().observations[0];
+			assert.equal(stored.output, 300);
+			assert.equal(stored.attribution.project.status, "conflict");
+			assert.deepEqual(stored.attribution.project.candidates.map((candidate) => candidate.id).sort(), ["project-a", "project-b", "project-c"]);
+		} finally {
+			reopened.close();
+			await rm(dir, { recursive: true, force: true });
+		}
+	}
+});
+
+test("event ingest rejects whitespace identifiers and invalid project paths", () => {
+	const { parseIngest } = require("../src/lib/observatory/store.ts");
+	const base = { id: "ingest", at: new Date(now).toISOString(), model: "gpt-6.1-sol", client: "fixture" };
+	for (const changes of [{ projectId: " project" }, { sessionId: "session " }, { parentSessionId: "parent" }, { cwd: "relative/path" }, { cwd: "\\\\.\\pipe\\fixture" }]) {
+		assert.throws(() => parseIngest({ ...base, ...changes }), changes.parentSessionId ? /父会话/ : /无效/);
+	}
+	const parsed = parseIngest({ ...base, cwd: "C:\\work\\repo", projectId: "p", sessionId: "s", parentSessionId: "p0" });
+	assert.equal(parsed.attribution.project.key, "project-path:C:/work/repo");
+	assert.equal(parsed.attribution.session.id, "s");
+	assert.equal(parsed.attribution.parentSession.id, "p0");
+});
+
+test("attribution groups conserve requests and keep conflicts in one unknown bucket", () => {
+	const conflict = withAttribution("conflict"), changed = projectAttribution({ source: "router", id: "project-b" });
+	conflict.attribution = { ...conflict.attribution, project: mergeAttribution(conflict.attribution.project, changed) };
+	const rows = [
+		withAttribution("known", { model: "model-a", input: 10, output: 2 }),
+		withAttribution("conflict", { model: "model-b", input: 20, output: 3, attribution: conflict.attribution }),
+		row("legacy", { model: "model-c", input: null, output: null, cache: null }),
+	];
+	const selection = makeAttributionSelection(rows, {});
+	assert.equal(selection.totals.requests, 3);
+	assert.equal(selection.totals.input, 30);
+	assert.deepEqual(selection.models.map((model) => model.model).sort(), ["model-a", "model-b", "model-c"]);
+	const unknown = selection.unknownProjects.reduce((sum, bucket) => sum + bucket.totals.requests, 0);
+	const known = selection.projects.reduce((sum, project) => sum + project.totals.requests, 0);
+	assert.equal(unknown + known, selection.totals.requests);
+	const projectTotals = [...selection.projects.map((project) => project.totals), ...selection.unknownProjects.map((bucket) => bucket.totals)];
+	for (const metric of ["input", "output", "cache", "inputRequests", "outputRequests", "cacheRequests", "tokenRequests"]) {
+		assert.equal(projectTotals.reduce((sum, totals) => sum + totals[metric], 0), selection.totals[metric], metric);
+	}
+	assert.equal(selection.unknownProjects.find((bucket) => bucket.status === "conflict").totals.requests, 1);
+	const sessionUnknown = selection.unknownSessions.reduce((sum, bucket) => sum + bucket.totals.requests, 0);
+	const sessionKnown = selection.sessions.reduce((sum, session) => sum + session.totals.requests, 0);
+	assert.equal(sessionUnknown + sessionKnown, selection.totals.requests);
+});
+
+test("time-window attribution recomputes a session from selected requests only", () => {
+	const beforeWindow = withAttribution("before-window", { at: "2026-10-13T15:59:59.999Z", model: "model-before", rawModel: "model-before", output: 9 });
+	const firstInWindow = withAttribution("first-in-window", { at: "2026-10-13T16:00:00.000Z", model: "model-window-a", rawModel: "model-window-a" });
+	const secondInWindow = withAttribution("second-in-window", { at: "2026-10-14T05:00:00.000Z", model: "model-window-b", rawModel: "model-window-b" });
+	const today = makeSnapshot([beforeWindow, firstInWindow, secondInWindow], [], "today", {}, now);
+	assert.equal(today.totals.requests, 2);
+	assert.equal(today.attribution.sessions.length, 1);
+	assert.equal(today.attribution.sessions[0].totals.requests, 2);
+	assert.equal(today.attribution.sessions[0].start, "2026-10-13T16:00:00.000Z");
+	assert.deepEqual(today.attribution.sessions[0].models.map((model) => model.model).sort(), ["model-window-a", "model-window-b"]);
+	const all = makeSnapshot([beforeWindow, firstInWindow, secondInWindow], [], "all", {}, now);
+	assert.equal(all.attribution.sessions[0].totals.requests, 3);
+	assert.deepEqual(all.attribution.sessions[0].models.map((model) => model.model).sort(), ["model-before", "model-window-a", "model-window-b"]);
+});
+
+test("store cache refreshes after an external ownership conflict and a restart reads the same revision", async () => {
+	const { execFileSync } = require("node:child_process");
+	const dir = await mkdtemp(join(tmpdir(), "observatory-attribution-store-"));
+	const initial = withAttribution("cache-row", { output: 300 });
+	const revised = withAttribution("cache-row", { output: 100, attribution: {
+		project: projectAttribution({ source: "router", id: "project-b" }),
+		session: sessionAttribution({ source: "codex", client: "Codex", id: "session-a" }),
+	} });
+	const worker = `const fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),assert=require('node:assert/strict');
+		require.extensions['.ts']=(m,f)=>m._compile(ts.transpileModule(fs.readFileSync(f,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,f);
+		const {ObservationArchive}=require('./src/lib/observatory/archive.ts');
+		const [initial,revised]=JSON.parse(process.argv[2]),file=path.join(process.env.OBSERVATORY_DATA_DIR,'history.sqlite');
+		let archive=new ObservationArchive(file);archive.commit([initial],[]);archive.close();
+		const store=require('./src/lib/observatory/store.ts');
+		(async()=>{try{
+			await store.setCollectionPaused(true);
+			const first=await store.getSnapshot('all');
+			assert.equal(first.totals.requests,1);assert.equal(first.attribution.projects.length,1);assert.equal(first.attribution.sessions[0].project.status,'known');
+			archive=new ObservationArchive(file);archive.setPaused(false);assert.equal(archive.commit([revised],[]),true);archive.setPaused(true);archive.close();
+			const second=await store.getSnapshot('all');
+			assert.equal(second.totals.requests,1);assert.equal(second.requests[0].output,300);
+			assert.equal(second.attribution.projects.length,0);assert.equal(second.attribution.unknownProjects.find(row=>row.status==='conflict').totals.requests,1);
+			assert.equal(second.attribution.sessions[0].project.status,'conflict');
+			await store.closeCollection();
+			const reopened=await store.getSnapshot('all');
+			assert.equal(reopened.totals.requests,1);assert.equal(reopened.requests[0].output,300);
+			assert.equal(reopened.attribution.unknownProjects.find(row=>row.status==='conflict').totals.requests,1);
+			assert.equal(reopened.attribution.sessions[0].project.status,'conflict');
+		}finally{await store.closeCollection();}})().catch(e=>{console.error(e);process.exitCode=1});`;
+	try {
+		execFileSync(process.execPath, ["-e", worker, "unused", JSON.stringify([initial, revised])], { cwd: process.cwd(), env: { ...process.env, USERPROFILE: dir, HOME: dir, APPDATA: dir, OBSERVATORY_DATA_DIR: dir }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 });
+	} finally { await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); }
 });

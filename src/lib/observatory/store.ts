@@ -8,6 +8,7 @@ import { eventTimes, makeSnapshot, nextSnapshotChange, reconcile } from "./ledge
 import type { ModelEvent, ObservatorySnapshot } from "./types";
 import { ObservationArchive } from "./archive";
 import type { CustomDates } from "./time-range";
+import { freezeEventAttribution, normalizeProjectPath, projectAttribution, sessionAttribution } from "./attribution";
 
 export const storeDir = process.env.OBSERVATORY_DATA_DIR ?? join(homedir(), ".model-observatory");
 
@@ -25,7 +26,24 @@ export function parseIngest(value: unknown): ModelEvent {
 	};
 	const input = usage("input"), output = usage("output"), cache = usage("cache");
 	if (cache !== null && input !== null && cache > input) throw new Error("缓存输入不能超过总输入");
-	return { id: `event:${row.client}:${row.id}`, at: new Date(String(row.at)).toISOString(), model: String(row.model), rawModel: String(row.model), client: String(row.client), upstream: typeof row.upstream === "string" ? row.upstream.slice(0, 200) : "未记录", input, output, cache, status: row.status === "ok" || row.status === "error" ? row.status : "unknown", duration: typeof row.duration === "number" && row.duration >= 0 && Number.isFinite(row.duration) ? row.duration : null, identity: "reported", requestId: String(row.id), evidence: [{ id: String(row.id), source: `event:${row.client}`, kind: "event" }] };
+	const optionalText = (key: string, limit: number, identifier = false) => {
+		const value = row[key];
+		if (value === undefined) return undefined;
+		if (typeof value !== "string" || !value || value.length > limit || /[\u0000-\u001f\u007f]/.test(value)) throw new Error(`无效字段：${key}`);
+		if (identifier && value.trim() !== value) throw new Error(`无效字段：${key}`);
+		return value;
+	};
+	const projectId = optionalText("projectId", 200, true), sessionId = optionalText("sessionId", 200, true), parentSessionId = optionalText("parentSessionId", 200, true);
+	const cwd = optionalText("cwd", 4096);
+	if (cwd !== undefined && normalizeProjectPath(cwd) === null) throw new Error("无效的项目工作目录");
+	if (parentSessionId !== undefined && sessionId === undefined) throw new Error("父会话必须与会话同时提供");
+	const source = `event:${row.client}`;
+	const attribution = freezeEventAttribution({
+		project: projectAttribution({ source, client: String(row.client), id: projectId, path: cwd }),
+		session: sessionAttribution({ source, client: String(row.client), id: sessionId }),
+		...(parentSessionId === undefined ? {} : { parentSession: sessionAttribution({ source, client: String(row.client), id: parentSessionId }) }),
+	});
+	return { id: `event:${row.client}:${row.id}`, at: new Date(String(row.at)).toISOString(), model: String(row.model), rawModel: String(row.model), client: String(row.client), upstream: typeof row.upstream === "string" ? row.upstream.slice(0, 200) : "未记录", input, output, cache, status: row.status === "ok" || row.status === "error" ? row.status : "unknown", duration: typeof row.duration === "number" && row.duration >= 0 && Number.isFinite(row.duration) ? row.duration : null, identity: "reported", requestId: String(row.id), evidence: [{ id: String(row.id), source, kind: "event" }], attribution };
 }
 
 export async function appendEvent(event: ModelEvent) {

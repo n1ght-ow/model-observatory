@@ -25,7 +25,11 @@ type DshUsageEvent = {
 	inputTokens: number;
 	outputTokens: number;
 	cacheReadTokens: number;
+	/** Stable identity used by the pre-attribution request ID. */
 	sessionId: string;
+	/** The explicit session header id; the path fallback above never sets this. */
+	sessionRecordId?: unknown;
+	cwd?: unknown;
 	/** `step/end` minus the matching `step/start`, i.e. how long the turn took. */
 	durationMs?: number;
 };
@@ -180,7 +184,7 @@ function stepKey(data: Record<string, unknown>): string {
 
 function toUsageEvent(
 	record: Record<string, unknown>,
-	session: { id: string },
+	session: { id: string; recordId?: unknown; cwd?: unknown },
 	stepStarts: Map<string, number>
 ): DshUsageEvent | null {
 	if (record.type !== "assistant/message" || !isRecord(record.data)) {
@@ -212,6 +216,8 @@ function toUsageEvent(
 		outputTokens,
 		cacheReadTokens,
 		sessionId: session.id,
+		sessionRecordId: session.recordId,
+		cwd: session.cwd,
 		durationMs:
 			startedAt !== undefined && time > startedAt ? time - startedAt : undefined,
 	};
@@ -231,6 +237,8 @@ type FileCacheEntry = {
 	/** `turn:step` → `step/start` time, kept so appended frames can time a turn. */
 	stepStarts: Map<string, number>;
 	sessionId: string;
+	sessionRecordId?: unknown;
+	cwd?: unknown;
 	/** True when the next byte is still inside a log line this reader does not need. */
 	skippingLine: boolean;
 };
@@ -278,7 +286,9 @@ export async function readDshSessionFile(path: string): Promise<DshUsageEvent[]>
 	const events = reset ? [] : [...cached!.events];
 	let sequence = reset ? 0 : cached!.sequence;
 	const stepStarts = reset ? new Map<string, number>() : cached!.stepStarts;
-	const session = { id: reset || !cached ? path : cached.sessionId };
+	const session: { id: string; recordId?: unknown; cwd?: unknown } = reset || !cached
+		? { id: path }
+		: { id: cached.sessionId, recordId: cached.sessionRecordId, cwd: cached.cwd };
 	const start = reset ? 0 : cached!.parsedBytes;
 	let prefix = reset ? Buffer.alloc(0) : cached!.prefix;
 	let pending = Buffer.alloc(0);
@@ -286,7 +296,9 @@ export async function readDshSessionFile(path: string): Promise<DshUsageEvent[]>
 	const absorb = (chunk: Buffer) => {
 		visitRecords(chunk, (record) => {
 			if (record.type === "session") {
+				if (Object.hasOwn(record, "id")) session.recordId = record.id;
 				session.id = toText(record.id, session.id);
+				if (Object.hasOwn(record, "cwd")) session.cwd = record.cwd;
 				return;
 			}
 			if (record.type === "step/start" && isRecord(record.data)) {
@@ -346,7 +358,7 @@ export async function readDshSessionFile(path: string): Promise<DshUsageEvent[]>
 		}
 	}
 	fileCache.set(path, {
-		size: info.size, mtimeMs: info.mtimeMs, parsedBytes: info.size - pending.length, prefix, events, sequence, stepStarts, sessionId: session.id, skippingLine,
+		size: info.size, mtimeMs: info.mtimeMs, parsedBytes: info.size - pending.length, prefix, events, sequence, stepStarts, sessionId: session.id, sessionRecordId: session.recordId, cwd: session.cwd, skippingLine,
 	});
 	return events;
 }

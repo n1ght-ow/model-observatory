@@ -8,7 +8,8 @@ import { listFiles } from "./files";
 import { readDshUsageEvents, releaseCommittedDsh } from "./sources/dsh";
 import { readCursor } from "./sources/cursor";
 import { scanJsonl } from "./jsonl";
-import type { Coverage, ModelEvent } from "./types";
+import { freezeEventAttribution, projectAttribution, sessionAttribution, unsupportedAttribution } from "./attribution";
+import type { Coverage, ModelEvent, ModelEventAttribution } from "./types";
 
 const home = (...parts: string[]) => join(homedir(), ...parts);
 const num = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -16,9 +17,32 @@ const obj = (value: unknown) => (value && typeof value === "object" ? value : {}
 const text = (value: unknown, fallback = "") => typeof value === "string" ? value : fallback;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 20);
 
+function eventAttribution(
+	source: string,
+	client: string,
+	project?: { id?: unknown; path?: unknown },
+	sessionId?: unknown,
+	parentSessionId?: unknown,
+): ModelEventAttribution {
+	const projectValue = projectAttribution({ source, client, id: project?.id, path: project?.path });
+	return freezeEventAttribution({
+		project: projectValue,
+		session: sessionAttribution({ source, client, id: sessionId }),
+		parentSession: sessionAttribution({ source, client, id: parentSessionId }),
+	});
+}
+
+function unsupportedEventAttribution(source: string, client: string): ModelEventAttribution {
+	return freezeEventAttribution({
+		project: unsupportedAttribution(source, client),
+		session: unsupportedAttribution(source, client),
+		parentSession: unsupportedAttribution(source, client),
+	});
+}
+
 function event(source: string, identity: string, at: string, model: string, client: string, fields: Partial<ModelEvent> = {}): ModelEvent {
 	const id = hash(`${source}:${identity}`);
-	return { id, at, rawModel: model, model, client, upstream: "未记录", input: null, output: null, cache: null, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source, kind: "session" }], ...fields };
+	return { id, at, rawModel: model, model, client, upstream: "未记录", input: null, output: null, cache: null, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source, kind: "session" }], attribution: eventAttribution(source, client), ...fields };
 }
 
 export function discardCodexPrefix(prefix: string) {
@@ -32,17 +56,41 @@ export function discardCodexPrefix(prefix: string) {
 	return Boolean(payload && payload[1] !== "token_count");
 }
 
+type CodexFileState = {
+	model: string;
+	client: string;
+	identitySession: string;
+	sessionId?: unknown;
+	cwd?: unknown;
+	parentSessionId?: unknown;
+	total: string;
+	counter: number;
+};
+
+function codexParentThreadId(payload: Record<string, unknown>): unknown {
+	const source = obj(payload.source);
+	const subagent = obj(source.subagent);
+	const spawn = obj(subagent.spawn);
+	return Object.hasOwn(spawn, "parent_thread_id") ? spawn.parent_thread_id : undefined;
+}
+
 async function readCodex(): Promise<ModelEvent[]> {
 	const files = (await Promise.all([listFiles(home(".codex", "sessions"), /\.jsonl$/, 5), listFiles(home(".codex", "archived_sessions"), /\.jsonl$/, 2)])).flat();
 	const output: ModelEvent[] = [];
 	for (const file of files) {
-		for (const row of await scanJsonl(file, "observatory-codex-v1", () => ({ model: "unknown", client: "Codex", session: basename(file), total: "", counter: 0 }), (record, state) => {
+		for (const row of await scanJsonl(file, "observatory-codex-v1", (): CodexFileState => ({ model: "unknown", client: "Codex", identitySession: basename(file), total: "", counter: 0 }), (record, state) => {
 			const payload = obj(record.payload);
 			if (record.type === "session_meta") {
-				state.session = text(payload.id, state.session);
+				if (Object.hasOwn(payload, "id")) state.sessionId = payload.id;
+				state.identitySession = text(payload.id, state.identitySession);
 				state.client = /desktop/i.test(text(payload.originator)) ? "Codex Desktop" : "Codex CLI";
+				if (Object.hasOwn(payload, "cwd")) state.cwd = payload.cwd;
+				state.parentSessionId = codexParentThreadId(payload);
 			}
-			if (record.type === "turn_context") state.model = text(payload.model, state.model);
+			if (record.type === "turn_context") {
+				state.model = text(payload.model, state.model);
+				if (Object.hasOwn(payload, "cwd")) state.cwd = payload.cwd;
+			}
 			if (payload.type !== "token_count") return [];
 			const info = obj(payload.info);
 			if (!info.last_token_usage) return [];
@@ -51,8 +99,9 @@ async function readCodex(): Promise<ModelEvent[]> {
 			state.total = total;
 			state.counter++;
 			const usage = obj(info.last_token_usage);
-			return [event("codex", `${state.session}:${state.counter}:${total}`, text(record.timestamp), state.model, state.client, {
+			return [event("codex", `${state.identitySession}:${state.counter}:${total}`, text(record.timestamp), state.model, state.client, {
 				input: num(usage.input_tokens), output: num(usage.output_tokens), cache: num(usage.cached_input_tokens), identity: "configured",
+				attribution: eventAttribution("codex", "Codex", { path: state.cwd }, state.sessionId, state.parentSessionId),
 			})];
 		}, (line) => /"(?:session_meta|turn_context|token_count)"/.test(line), discardCodexPrefix)) output.push(row);
 	}
@@ -72,6 +121,7 @@ async function readRouter(): Promise<ModelEvent[]> {
 			output: typeof row.outputTokens === "number" ? num(row.outputTokens) : null,
 			cache: typeof row.cachedInputTokens === "number" ? num(row.cachedInputTokens) : null,
 			status: status >= 400 ? "error" : status >= 200 ? "ok" : "unknown", duration: num(row.durationMs) || null,
+			attribution: unsupportedEventAttribution("router", "未识别工具"),
 		});
 		result.evidence[0].kind = "router";
 		return [result];
@@ -90,16 +140,30 @@ async function readClaude(): Promise<ModelEvent[]> {
 			requestId: text(message.id) || undefined,
 			input: message.usage ? num(usage.input_tokens) + cache + num(usage.cache_creation_input_tokens) : null,
 			output: message.usage ? num(usage.output_tokens) : null, cache: message.usage ? cache : null,
+			attribution: eventAttribution("claude-code", "Claude Code", { path: row.cwd }, row.sessionId),
 		})];
 	}, (line) => line.includes('"assistant"'))) output.push(row);
 	return output;
 }
 
+type AgentFileState = {
+	sessionId?: unknown;
+	cwd?: unknown;
+};
+
 async function readAgent(source: "pi" | "command-code"): Promise<ModelEvent[]> {
 	const root = source === "pi" ? home(".pi", "agent", "sessions") : home(".commandcode", "projects");
 	const files = (await listFiles(root, /\.jsonl$/, 5)).filter((file) => !file.includes("checkpoint"));
 	const output: ModelEvent[] = [];
-	for (const file of files) for (const row of await scanJsonl(file, `observatory-${source}-v1`, () => ({}), (row, _state, line) => {
+	for (const file of files) for (const row of await scanJsonl(file, `observatory-${source}-v1`, (): AgentFileState => ({}), (row, state, line) => {
+		if (source === "pi" && row.type === "session") {
+			if (Object.hasOwn(row, "id")) state.sessionId = row.id;
+			if (Object.hasOwn(row, "cwd")) state.cwd = row.cwd;
+			// pi parentSession is normally a path to another log. It is not the
+			// parent's header id, so treating it as a session id would fabricate a
+			// relationship that the attribution contract cannot verify.
+			return [];
+		}
 		const message = obj(row.message);
 		if (row.type !== "message" || message.role !== "assistant") return [];
 		const usage = obj(source === "pi" ? message.usage : row.usage);
@@ -111,12 +175,53 @@ async function readAgent(source: "pi" | "command-code"): Promise<ModelEvent[]> {
 			requestId: id, upstream: text(message.provider, source === "command-code" ? "Command Code" : "未记录"),
 			input: input + cache + write, output: num(usage.output ?? usage.outputTokens), cache,
 			status: message.stopReason === "error" ? "error" : "unknown",
+			attribution: source === "pi"
+				? eventAttribution("pi", "pi", { path: state.cwd }, state.sessionId)
+				: unsupportedEventAttribution("command-code", "Command Code CLI"),
 		})];
-	}, (line) => line.includes('"message"'))) output.push(row);
+	}, (line) => line.includes('"message"') || (source === "pi" && /"type"\s*:\s*"session"/.test(line)))) output.push(row);
 	return output;
 }
 
 const databases = new Map<string, { signature: string; rows: ModelEvent[] }>();
+const databaseTableColumns = (db: DatabaseSync, table: "message" | "model_usage" | "session") =>
+	new Set(db.prepare(`PRAGMA table_info(${JSON.stringify(table)})`).all().map((row) => text((row as Record<string, unknown>).name)));
+
+function sessionIdsAreUnique(db: DatabaseSync, columns: Set<string>) {
+	return columns.has("id") && !db.prepare("SELECT 1 FROM session GROUP BY id HAVING COUNT(*) > 1 LIMIT 1").get();
+}
+
+function databaseSessionSelect(columns: Set<string>, joined: boolean) {
+	const prefix = joined ? "s." : "";
+	const field = (name: string, alias: string) => joined && columns.has(name) ? `${prefix}${name} AS ${alias}` : `NULL AS ${alias}`;
+	return [field("directory", "session_cwd"), field("project_id", "session_project_id"), field("parent_id", "session_parent_id")].join(", ");
+}
+
+type DatabaseSchemaSupport = {
+	session: boolean;
+	project: boolean;
+	parent: boolean;
+	ambiguousSessionMap: boolean;
+};
+
+function databaseAttribution(source: string, client: string, row: Record<string, unknown>, supported: DatabaseSchemaSupport) {
+	return freezeEventAttribution({
+		project: supported.project
+			? supported.ambiguousSessionMap
+				? projectAttribution({ source, client, id: null })
+				: projectAttribution({ source, client, id: row.session_project_id ?? undefined, path: row.session_cwd ?? undefined })
+			: unsupportedAttribution(source, client),
+		session: supported.session
+			? sessionAttribution({ source, client, id: row.session_id ?? undefined })
+			: unsupportedAttribution(source, client),
+		parentSession: supported.parent
+			? supported.ambiguousSessionMap
+				? sessionAttribution({ source, client, id: null })
+				: sessionAttribution({ source, client, id: row.session_parent_id ?? undefined })
+			: unsupportedAttribution(source, client),
+	});
+}
+
 async function readDatabase(source: "zcode" | "opencode"): Promise<ModelEvent[]> {
 	const path = source === "zcode" ? home(".zcode", "cli", "db", "db.sqlite") : home(".local", "share", "opencode", "opencode.db");
 	if (!existsSync(path)) return [];
@@ -127,21 +232,48 @@ async function readDatabase(source: "zcode" | "opencode"): Promise<ModelEvent[]>
 	try {
 		const rows: ModelEvent[] = [];
 		if (source === "zcode") {
-			const records = db.prepare("SELECT id, model_id, provider_id, status, started_at, duration_ms, input_tokens, output_tokens, cache_read_input_tokens FROM model_usage WHERE status IN ('completed','error','cancelled')").iterate();
-			for (const r of records) rows.push(event(source, text(r.id), new Date(r.started_at as string | number).toISOString(), text(r.model_id, "unknown"), "ZCode", {
-				requestId: text(r.id), upstream: text(r.provider_id, "未记录"), input: typeof r.input_tokens === "number" ? num(r.input_tokens) : null,
-				output: typeof r.output_tokens === "number" ? num(r.output_tokens) : null, cache: typeof r.cache_read_input_tokens === "number" ? num(r.cache_read_input_tokens) : null,
-				status: r.status === "completed" ? "ok" : "error", duration: num(r.duration_ms) || null,
-			}));
+			const usageColumns = databaseTableColumns(db, "model_usage"), sessionColumns = databaseTableColumns(db, "session");
+			const hasSessionLink = usageColumns.has("session_id");
+			const joined = hasSessionLink && sessionIdsAreUnique(db, sessionColumns);
+			const supported = {
+				session: hasSessionLink,
+				project: hasSessionLink && sessionColumns.has("id") && (sessionColumns.has("directory") || sessionColumns.has("project_id")),
+				parent: hasSessionLink && sessionColumns.has("id") && sessionColumns.has("parent_id"),
+				ambiguousSessionMap: hasSessionLink && sessionColumns.has("id") && !joined,
+			};
+			const sessionId = usageColumns.has("session_id") ? "m.session_id AS session_id" : "NULL AS session_id";
+			const records = db.prepare(`SELECT m.id, m.model_id, m.provider_id, m.status, m.started_at, m.duration_ms, m.input_tokens, m.output_tokens, m.cache_read_input_tokens, ${sessionId}, ${databaseSessionSelect(sessionColumns, joined)} FROM model_usage AS m ${joined ? "LEFT JOIN session AS s ON s.id = m.session_id" : ""} WHERE m.status IN ('completed','error','cancelled')`).iterate();
+			for (const value of records) {
+				const r = value as Record<string, unknown>;
+				rows.push(event(source, text(r.id), new Date(r.started_at as string | number).toISOString(), text(r.model_id, "unknown"), "ZCode", {
+					requestId: text(r.id), upstream: text(r.provider_id, "未记录"), input: typeof r.input_tokens === "number" ? num(r.input_tokens) : null,
+					output: typeof r.output_tokens === "number" ? num(r.output_tokens) : null, cache: typeof r.cache_read_input_tokens === "number" ? num(r.cache_read_input_tokens) : null,
+					status: r.status === "completed" ? "ok" : "error", duration: num(r.duration_ms) || null,
+					attribution: databaseAttribution("zcode", "ZCode", r, supported),
+				}));
+			}
 		} else {
-			// Select only usage metadata; never load prompts, paths or message bodies.
-			const records = db.prepare("SELECT id, json_extract(data,'$.modelID') AS model, json_extract(data,'$.providerID') AS provider, json_extract(data,'$.tokens') AS tokens, json_extract(data,'$.time.created') AS started, json_extract(data,'$.time.completed') AS ended, json_extract(data,'$.error.name') AS error FROM message WHERE json_extract(data,'$.role')='assistant' AND json_extract(data,'$.time.completed') IS NOT NULL").iterate();
-			for (const r of records) {
+			// Select usage metadata and the whitelisted session directory; never
+			// load prompts, message bodies, or other stored paths.
+			const messageColumns = databaseTableColumns(db, "message"), sessionColumns = databaseTableColumns(db, "session");
+			const hasSessionLink = messageColumns.has("session_id");
+			const joined = hasSessionLink && sessionIdsAreUnique(db, sessionColumns);
+			const supported = {
+				session: hasSessionLink,
+				project: hasSessionLink && sessionColumns.has("id") && (sessionColumns.has("directory") || sessionColumns.has("project_id")),
+				parent: hasSessionLink && sessionColumns.has("id") && sessionColumns.has("parent_id"),
+				ambiguousSessionMap: hasSessionLink && sessionColumns.has("id") && !joined,
+			};
+			const sessionId = messageColumns.has("session_id") ? "m.session_id AS session_id" : "NULL AS session_id";
+			const records = db.prepare(`SELECT m.id, json_extract(m.data,'$.modelID') AS model, json_extract(m.data,'$.providerID') AS provider, json_extract(m.data,'$.tokens') AS tokens, json_extract(m.data,'$.time.created') AS started, json_extract(m.data,'$.time.completed') AS ended, json_extract(m.data,'$.error.name') AS error, ${sessionId}, ${databaseSessionSelect(sessionColumns, joined)} FROM message AS m ${joined ? "LEFT JOIN session AS s ON s.id = m.session_id" : ""} WHERE json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.time.completed') IS NOT NULL`).iterate();
+			for (const value of records) {
+				const r = value as Record<string, unknown>;
 				const tokens = obj(JSON.parse(text(r.tokens, "{}"))), cache = obj(tokens.cache);
 				rows.push(event(source, text(r.id), new Date(num(r.ended)).toISOString(), text(r.model, "unknown"), "OpenCode", {
 					requestId: text(r.id), upstream: text(r.provider, "未记录"), input: r.tokens ? num(tokens.input) + num(cache.read) + num(cache.write) : null,
 					output: r.tokens ? num(tokens.output) + num(tokens.reasoning) : null, cache: r.tokens ? num(cache.read) : null,
 					status: r.error ? "error" : "unknown", duration: num(r.ended) - num(r.started) || null,
+					attribution: databaseAttribution("opencode", "OpenCode", r, supported),
 				}));
 			}
 		}
@@ -157,7 +289,10 @@ async function readGrok(): Promise<ModelEvent[]> {
 		if (row.type !== "assistant" || typeof row.model_id !== "string" || !row.model_id) return [];
 		// Grok history has no reliable call time or usage. The sentinel is never
 		// included in a dated range or chart; the call remains visible in all history.
-		return [event("grok-cli", `${hash(file)}:${line}`, "1970-01-01T00:00:00.000Z", row.model_id, "Grok CLI", { timeKnown: false })];
+		return [event("grok-cli", `${hash(file)}:${line}`, "1970-01-01T00:00:00.000Z", row.model_id, "Grok CLI", {
+			timeKnown: false,
+			attribution: unsupportedEventAttribution("grok-cli", "Grok CLI"),
+		})];
 	})) output.push(row);
 	return output;
 }
@@ -171,7 +306,10 @@ const readers: Reader[] = [
 	{ id: "dsh", name: "DeepSeek Harness", description: "读取原始压缩会话中的模型与 usage，不依赖 CC Switch。", read: async () => (await readDshUsageEvents()).map((r) => {
 		let result = dshEvents.get(r);
 		if (!result) {
-			result = event("dsh", `${r.sessionId}:${r.at}:${r.sequence}`, r.at, r.model, "DeepSeek Harness", { upstream: r.provider, input: r.inputTokens, output: r.outputTokens, cache: r.cacheReadTokens, duration: r.durationMs ?? null });
+			result = event("dsh", `${r.sessionId}:${r.at}:${r.sequence}`, r.at, r.model, "DeepSeek Harness", {
+				upstream: r.provider, input: r.inputTokens, output: r.outputTokens, cache: r.cacheReadTokens, duration: r.durationMs ?? null,
+				attribution: eventAttribution("dsh", "DeepSeek Harness", { path: r.cwd }, r.sessionRecordId),
+			});
 			dshEvents.set(r, result);
 		}
 		return result;

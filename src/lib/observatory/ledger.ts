@@ -1,6 +1,7 @@
 import { normalizeModel } from "./identity";
-import type { ModelEvent, ModelSummary, ObservatorySnapshot, Coverage } from "./types";
+import type { ActivityModel, ActivityPoint, ModelEvent, ModelSummary, ObservatorySnapshot, Coverage } from "./types";
 import { timeBounds, type CustomDates } from "./time-range";
+import { buildAttribution, mergeEventAttribution } from "./attribution";
 
 /** One-to-one reconciliation: never dedupe two calls made by the same reader. */
 export function reconcile(observations: ModelEvent[], aliases: Record<string, string> = {}) {
@@ -15,12 +16,18 @@ export function reconcile(observations: ModelEvent[], aliases: Record<string, st
 		let model = modelNames.get(observation.rawModel);
 		if (model === undefined) { model = normalizeModel(observation.rawModel, aliases); modelNames.set(observation.rawModel, model); }
 		const row = model === observation.model ? observation : { ...observation, model };
-		const key = row.requestId ? `${row.evidence[0].source}:${row.requestId}` : row.id;
+		const key = row.requestId ? JSON.stringify([row.evidence[0].source, row.requestId]) : row.id;
 		const previous = stableIds.get(key);
 		if (previous !== undefined) {
 			const list = previous > 0 ? native : routers, index = Math.abs(previous) - 1;
 			// Re-emitted message ids are revisions of one request, not new calls.
-			if ((row.output ?? 0) >= (list[index].output ?? 0)) list[index] = { ...list[index], ...row };
+			const current = list[index];
+			const attribution = mergeEventAttribution(current.attribution, row.attribution);
+			// Usage keeps the newest report while ownership evidence from an older
+			// replay can still establish a conflict.
+			list[index] = (row.output ?? 0) >= (current.output ?? 0)
+				? { ...current, ...row, ...(attribution ? { attribution } : {}) }
+				: { ...current, ...(attribution ? { attribution } : {}) };
 			merged++;
 			continue;
 		}
@@ -67,7 +74,8 @@ export function reconcile(observations: ModelEvent[], aliases: Record<string, st
 			used.add(owner.id);
 			// Only reconciled or renamed rows need a new object. Raw evidence can
 			// stay shared with the archive and incremental readers across queries.
-			native[candidate] = { ...owner, evidence: [...owner.evidence, ...router.evidence], upstream: router.upstream, status: router.status, duration: router.duration, identity: "reported", cache: router.cache ?? owner.cache };
+			const attribution = mergeEventAttribution(owner.attribution, router.attribution);
+			native[candidate] = { ...owner, evidence: [...owner.evidence, ...router.evidence], upstream: router.upstream, status: router.status, duration: router.duration, identity: "reported", cache: router.cache ?? owner.cache, ...(attribution ? { attribution } : {}) };
 			merged++;
 		} else if (matches > 1) {
 			pending.push(router);
@@ -166,19 +174,32 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 	const start = since ?? earliest;
 	const offset = bucketMs >= 86_400_000 ? 8 * 3_600_000 : 0;
 	const bucketAt = (at: number) => Math.floor((at + offset) / bucketMs) * bucketMs - offset;
-	const buckets = new Map<number, { at: string; requests: number; tokens: number }>();
-	for (let at = bucketAt(start); at <= end; at += bucketMs) buckets.set(at, { at: new Date(at).toISOString(), requests: 0, tokens: 0 });
+	const buckets = new Map<number, ActivityPoint>();
+	const bucketModels = new Map<ActivityPoint, Map<string, ActivityModel>>();
+	for (let at = bucketAt(start); at <= end; at += bucketMs) buckets.set(at, { at: new Date(Math.max(at, start)).toISOString(), until: new Date(Math.min(at + bucketMs, end + 1)).toISOString(), requests: 0, tokens: 0, models: [] });
 	for (let index = 0; index < events.length; index++) {
 		if (events[index].timeKnown === false) continue;
 		const bucket = buckets.get(bucketAt(times[index]));
-		if (bucket) { bucket.requests++; bucket.tokens += (events[index].input ?? 0) + (events[index].output ?? 0); }
+		if (bucket) {
+			const row = events[index];
+			bucket.requests++; bucket.tokens += (row.input ?? 0) + (row.output ?? 0);
+			const byModel = bucketModels.get(bucket) ?? new Map<string, ActivityModel>();
+			const model = byModel.get(row.model) ?? { model: row.model, requests: 0, input: 0, output: 0, cache: 0, inputRequests: 0, outputRequests: 0, cacheRequests: 0, tokenRequests: 0 };
+			model.requests++;
+			model.input += row.input ?? 0; model.output += row.output ?? 0; model.cache += row.cache ?? 0;
+			model.inputRequests += Number(row.input !== null); model.outputRequests += Number(row.output !== null); model.cacheRequests += Number(row.cache !== null);
+			model.tokenRequests += Number(row.input !== null && row.output !== null);
+			if (!byModel.has(row.model)) { byModel.set(row.model, model); bucket.models.push(model); }
+			bucketModels.set(bucket, byModel);
+		}
 	}
 	if (!prepared) events.sort((a, b) => b.at.localeCompare(a.at));
+	const attribution = buildAttribution(events).overview;
 	return {
 		generatedAt: new Date(now).toISOString(), range, since: since === null ? null : new Date(since).toISOString(), until: until === null ? null : new Date(until).toISOString(),
 		totals: { requests: events.length, turnRequests, models: models.size, clients: clients.size, input, output, cache, inputRequests, outputRequests, cacheRequests, errors, tokenRequests },
 		models: list, activity: [...buckets.values()], requests: events, requestCount: events.length, coverage,
 		reconciliation: { observations: observations.length, merged: ledger.merged, pending: ledger.pending.length, excluded: 0 },
-		pending: ledger.pending, aliases,
+		pending: ledger.pending, aliases, attribution,
 	};
 }

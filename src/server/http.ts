@@ -78,7 +78,7 @@ export function createDesktopServer(assets: string, token: string) {
 		try { name = decodeURIComponent(url.pathname); } catch { return respond(response, 400, "Invalid path"); }
 		if (name.includes("\\") || name.includes("\0")) return respond(response, 404, "Not found");
 		if (name === "/") name = "/index.html";
-		else if (["/requests", "/tools"].includes(name)) name += ".html";
+		else if (["/projects", "/sessions", "/requests", "/tools"].includes(name)) name += ".html";
 		const filename = path.resolve(root, "." + name);
 		if (!filename.startsWith(root + path.sep)) return respond(response, 404, "Not found");
 		const file = await stat(filename).catch(() => undefined);

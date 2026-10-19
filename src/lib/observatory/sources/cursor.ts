@@ -4,6 +4,7 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { freezeEventAttribution, mergeAttribution, projectAttribution, sessionAttribution } from "../attribution";
 import type { ModelEvent } from "../types";
 
 type Bubble = {
@@ -54,7 +55,7 @@ export async function readCursor(path = databasePath()): Promise<ModelEvent[]> {
 			group.push(row);
 			conversations.set(composer, group);
 		}
-		const turns = new Map<string, { at: string; models: Set<string> }>();
+		const turns = new Map<string, { at: string; models: Set<string>; composers: Set<string> }>();
 		for (const [composer, bubbles] of conversations) {
 			const timestamp = (row: Bubble) => row.created === null ? NaN : new Date(row.created).getTime();
 			const ordered = bubbles.every((row) => order.has(`${composer}:${row.bubble}`));
@@ -69,9 +70,10 @@ export async function readCursor(path = databasePath()): Promise<ModelEvent[]> {
 				} else if (bubble.type === 2 && !bubble.simulated && request) {
 					const id = request.request!;
 					const at = new Date(request.created!).toISOString();
-					const turn = turns.get(id) ?? { at, models: new Set<string>() };
+					const turn = turns.get(id) ?? { at, models: new Set<string>(), composers: new Set<string>() };
 					if (at < turn.at) turn.at = at;
 					if (typeof request.model === "string" && request.model.trim()) turn.models.add(request.model.trim());
+					turn.composers.add(composer);
 					turns.set(id, turn);
 				}
 			}
@@ -81,9 +83,16 @@ export async function readCursor(path = databasePath()): Promise<ModelEvent[]> {
 			const model = turn.models.size === 1 ? [...turn.models][0] : "unknown";
 			// tokenCount is initialized to zero by Cursor; it is not provider usage.
 			// An agent turn can contain many calls, so keep that scope explicit.
+			let session = sessionAttribution({ source: "cursor", client: "Cursor" });
+			for (const composer of turn.composers) session = mergeAttribution(session, sessionAttribution({ source: "cursor", client: "Cursor", id: composer }))!;
+			const attribution = freezeEventAttribution({
+				project: projectAttribution({ source: "cursor", client: "Cursor" }),
+				session,
+				parentSession: sessionAttribution({ source: "cursor", client: "Cursor" }),
+			});
 			return { id, at: turn.at, model, rawModel: model, client: "Cursor", upstream: "未记录",
 				input: null, output: null, cache: null, status: "unknown", duration: null,
-				identity: "configured", scope: "turn", requestId, evidence: [{ id, source: "cursor", kind: "session" }] };
+				identity: "configured", scope: "turn", requestId, evidence: [{ id, source: "cursor", kind: "session" }], attribution };
 		});
 		cache.set(path, { signature, events });
 		return events;
