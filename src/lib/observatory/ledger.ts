@@ -1,4 +1,4 @@
-import { normalizeModel } from "./identity";
+import { normalizeModel, UNRECORDED_CLIENT } from "./identity";
 import type { ActivityModel, ActivityPoint, ModelEvent, ModelSummary, ObservatorySnapshot, Coverage } from "./types";
 import { timeBounds, type CustomDates } from "./time-range";
 import { buildAttribution, mergeEventAttribution } from "./attribution";
@@ -15,7 +15,10 @@ export function reconcile(observations: ModelEvent[], aliases: Record<string, st
 	for (const observation of observations) {
 		let model = modelNames.get(observation.rawModel);
 		if (model === undefined) { model = normalizeModel(observation.rawModel, aliases); modelNames.set(observation.rawModel, model); }
-		const row = model === observation.model ? observation : { ...observation, model };
+		// Retained router history uses the old placeholder; revise the view without
+		// rewriting immutable evidence or inferring a caller from the route name.
+		const client = observation.client === "未识别工具" && observation.evidence[0].kind === "router" ? UNRECORDED_CLIENT : observation.client;
+		const row = model === observation.model && client === observation.client ? observation : { ...observation, model, client };
 		const key = row.requestId ? JSON.stringify([row.evidence[0].source, row.requestId]) : row.id;
 		const previous = stableIds.get(key);
 		if (previous !== undefined) {

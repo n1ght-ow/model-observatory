@@ -212,6 +212,9 @@
 .obs-client-badges { display: flex; flex-wrap: wrap; gap: 5px; max-width: 210px; }
 .obs-client-badges span { background: var(--obs-panel); color: var(--obs-muted); border: 1px solid var(--obs-line); padding: 2px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
 .obs-time { color: var(--obs-muted); font-size: 11px; white-space: nowrap; }
+.obs-recent-call { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.obs-recent-call > span:first-child { font-size: 10px; }
+.obs-recent-call > span:last-child { font-size: 11px; }
 .obs-table .obs-row-selected > td { background: var(--obs-hover); }
 .obs-rotated { transform: rotate(180deg); }
 .obs-expanded-row { background: var(--obs-panel); }

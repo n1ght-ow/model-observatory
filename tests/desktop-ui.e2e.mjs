@@ -324,7 +324,7 @@ try {
 	assert.equal(await page.getByRole("link", { name: /导出/ }).count(), 0);
 	assert.equal(await page.locator(".obs-stat-strip").count(), 0);
 	await page.getByText("当前接入状态 · 历史累计记录", { exact: true }).waitFor();
-	assert.match(await page.locator(".obs-coverage-list article").first().innerText(), /读取异常|待接入|暂无记录/);
+	assert.equal(await page.locator(".obs-coverage-list article").filter({ has: page.getByRole("heading", { name: /ChatGPT 桌面端 \/ 网页/ }) }).count(), 0);
 	await page.getByRole("button", { name: "立即刷新" }).click();
 	await page.locator('main[aria-busy="false"]').waitFor();
 	const cursorSource = page.locator(".obs-coverage-list article").filter({ has: page.getByRole("heading", { name: /^Cursor/ }) });
@@ -345,7 +345,43 @@ try {
 		await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
 	}
 	record("Cursor 来源、轮次口径、未知 Token、证据展开与 CSV 单位");
-	assert.ok(await page.getByRole("heading", { name: /ChatGPT 桌面端 \/ 网页/ }).isVisible());
+	const coverageData = await (await fetch(`${BASE}/api/observatory?range=all&limit=0`)).json();
+	const eventSource = coverageData.coverage.find((source) => source.id === "events");
+	const eventsCard = page.locator(".obs-coverage-list article").filter({ has: page.getByRole("heading", { name: /^统一事件接口/ }) });
+	assert.equal(await eventsCard.count(), eventSource && (eventSource.count > 0 || eventSource.state === "error") ? 1 : 0);
+	await page.getByText("已知边界", { exact: true }).click();
+	await page.getByText("ChatGPT 桌面端 / 网页暂无可读取的逐请求 usage", { exact: false }).waitFor();
+	await page.getByText("统一接入", { exact: true }).click();
+	await page.getByText("POST /api/observatory/events", { exact: false }).waitFor();
+	// Exercise nonempty and failed event sources as well as the empty real source.
+	for (const [state, count] of [["connected", 1], ["error", 0], ["empty", 0]]) {
+		await page.route("**/api/observatory?**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...coverageData, generatedAt: new Date().toISOString(), coverage: coverageData.coverage.map((source) => source.id === "events" ? { ...source, state, count } : source) }) }));
+		const updated = page.waitForResponse((response) => response.url().includes("/api/observatory?") && response.status() === 200);
+		await page.getByRole("button", { name: "立即刷新" }).click();
+		await updated;
+		await page.locator('main[aria-busy="false"]').waitFor();
+		await page.waitForFunction((expected) => [...document.querySelectorAll(".obs-coverage-list article h3")].filter((heading) => heading.textContent.startsWith("统一事件接口")).length === expected, state === "empty" ? 0 : 1);
+		await page.unroute("**/api/observatory?**");
+	}
+	const unidentified = await (await fetch(`${BASE}/api/observatory?range=all&client=${encodeURIComponent("客户端未记录")}`)).json();
+	if (unidentified.requestCount > 0) {
+		assert.ok(unidentified.requests.every((row) => row.client === "客户端未记录"));
+		const csv = await (await fetch(`${BASE}/api/observatory?range=all&client=${encodeURIComponent("客户端未记录")}&format=csv`)).text();
+		assert.ok(csv.includes("客户端未记录") && !csv.includes("未识别工具"));
+		await page.goto(`${BASE}/requests?range=all&client=${encodeURIComponent("客户端未记录")}`, { waitUntil: "domcontentloaded" });
+		await waitData();
+		assert.equal(await page.getByLabel("按工具筛选").inputValue(), "客户端未记录");
+		assert.ok(!(await page.locator("main").innerText()).includes("未识别工具"));
+		await page.getByRole("button", { name: /查看请求 .* 的证据/ }).first().click();
+		await page.locator(".obs-request-evidence").getByText("仅有路由证据，原始日志未保存客户端信息，也未能与客户端会话记录核对。", { exact: true }).waitFor();
+		await page.goto(`${BASE}/?range=all`, { waitUntil: "domcontentloaded" });
+		await waitData();
+		const model = unidentified.requests[0].model;
+		await page.getByRole("button", { name: `展开 ${model}`, exact: true }).click();
+		await page.getByText("仅有路由证据，原始日志未保存客户端信息，也未能与客户端会话记录核对。", { exact: true }).waitFor();
+		await page.goto(`${BASE}/tools`, { waitUntil: "domcontentloaded" });
+		await page.getByRole("heading", { name: "采集覆盖" }).waitFor();
+	}
 	assert.ok(await page.getByRole("heading", { name: "模型命名规则" }).isVisible());
 	// UI mutation is mocked: acceptance tests never add aliases to real history.
 	await page.route("**/api/observatory/aliases", (route) => route.fulfill({ status: 200, contentType: "application/json", body: '{"saved":true}' }));
@@ -354,7 +390,7 @@ try {
 	await page.getByRole("button", { name: "保存规则" }).click();
 	await page.getByRole("status").filter({ hasText: "规则已保存" }).waitFor();
 	await page.unroute("**/api/observatory/aliases");
-	record("采集覆盖、ChatGPT 未覆盖提示、命名规则交互");
+	record("客户端未记录的历史归一、筛选与 CSV；空来源隐藏、接入说明与命名规则交互");
 
 	await page.getByRole("link", { name: "模型总览", exact: true }).click();
 	await waitData();

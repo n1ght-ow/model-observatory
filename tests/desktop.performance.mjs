@@ -6,6 +6,8 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const [label, executable, fixture] = process.argv.slice(2);
@@ -30,10 +32,26 @@ let app;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const median = (values) => { const sorted = [...values].sort((a, b) => a - b); return (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.floor(sorted.length / 2)]) / 2; };
 const summarize = (samples) => ({ privateMiB: median(samples.map((sample) => sample.reduce((n, row) => n + row.memory.privateBytes, 0))) / 1024, workingSetMiB: median(samples.map((sample) => sample.reduce((n, row) => n + row.memory.workingSetSize, 0))) / 1024, cpuPercent: median(samples.map((sample) => sample.reduce((n, row) => n + row.cpu.percentCPUUsage, 0))), processes: samples.at(-1) });
+const execFileAsync = promisify(execFile);
+async function privateWorkingSet(metrics) {
+	const ids = metrics.map((row) => row.pid);
+	assert.ok(ids.length && ids.every(Number.isSafeInteger));
+	const filter = ids.map((id) => `IDProcess=${id}`).join(" OR ");
+	const script = `Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter '${filter}' | Select-Object IDProcess,WorkingSetPrivate,PrivateBytes | ConvertTo-Json -Compress`;
+	const { stdout } = await execFileAsync(path.join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 15000 });
+	const value = JSON.parse(stdout), rows = Array.isArray(value) ? value : [value];
+	assert.deepEqual(rows.map((row) => Number(row.IDProcess)).sort((a, b) => a - b), [...ids].sort((a, b) => a - b), "Measure every owned process");
+	return { at: new Date().toISOString(), privateWorkingMiB: rows.reduce((sum, row) => sum + Number(row.WorkingSetPrivate), 0) / 1024 / 1024, processes: rows };
+}
 async function sampleMemory(count = 8) {
-	const samples = [];
-	for (let i = 0; i < count; i++) { await sleep(1000); samples.push(await app.evaluate(({ app }) => app.getAppMetrics())); }
-	return summarize(samples);
+	const samples = [], nativeSamples = [];
+	for (let i = 0; i < count; i++) {
+		await sleep(1000);
+		const metrics = await app.evaluate(({ app }) => app.getAppMetrics());
+		samples.push(metrics);
+		if (i === 1 || i === 4 || i === count - 1) nativeSamples.push(await privateWorkingSet(metrics));
+	}
+	return { ...summarize(samples), privateWorkingMiB: median(nativeSamples.map((sample) => sample.privateWorkingMiB)), privateWorkingPeakMiB: Math.max(...nativeSamples.map((sample) => sample.privateWorkingMiB)), nativeSamples };
 }
 try {
 	const started = performance.now();
@@ -109,9 +127,11 @@ try {
 	}));
 	const graphics = await app.evaluate(({ app }) => ({ hardwareAcceleration: app.isHardwareAccelerationEnabled(), features: app.getGPUFeatureStatus() }));
 	const result = { label, graphics, executable: path.resolve(executable), launchArgs, scroll, version: await app.evaluate(({ app }) => app.getVersion()), fixture: path.resolve(fixture), sourceFixture: existsSync(sources), initialRequests: initial.totals.requests, afterAppendRequests: afterAppend.snapshot.totals.requests, firstUiMs, queryMs: queries, queryMedianMs: median(queries), queryCollectionCommits: collectionTimes.size - 1, visible, requestView, hidden, collectionMs, afterAppendQueryMs: afterAppend.ms, restoreMs, testedAt: new Date().toISOString(), method: "Fixed metadata-only ledger and JSONL copy, plus optional fixture/sources logs; isolated home/profile; packaged EXEs; executable paths may differ; startup timings reported separately; 12 queries alternating all/today, reusing a snapshot until the ledger or time-window membership changes; 8 one-second samples per window state with all-history UI; four-second foreground scroll afterwards; no forced GC, memory caps or working-set trimming. Electron metrics are KiB; summed working sets may include shared pages." };
+	result.method = result.method.replace("8 one-second samples per window state", "8 samples per window state separated by at least one second, including three native Windows counter samples");
+	result.privateWorkingSetMethod = "Sum WorkingSetPrivate from Win32_PerfFormattedData_PerfProc_Process for every PID in app.getAppMetrics; bytes converted to MiB. This is private resident memory, distinct from PrivateBytes commitment and summed working sets including shared pages. Report the three raw native samples, their median and peak for each state.";
 	await mkdir(path.join(root, "logs", "performance"), { recursive: true });
 	await writeFile(path.join(root, "logs", "performance", label + ".json"), JSON.stringify(result, null, 2));
-	console.log(JSON.stringify({ label, firstUiMs, requests: initial.totals.requests, queryMedianMs: result.queryMedianMs, visiblePrivateMiB: visible.privateMiB, requestPrivateMiB: requestView.privateMiB, hiddenPrivateMiB: hidden.privateMiB, collectionMs, restoreMs, scroll }));
+	console.log(JSON.stringify({ label, firstUiMs, requests: initial.totals.requests, queryMedianMs: result.queryMedianMs, visiblePrivateMiB: visible.privateMiB, requestPrivateMiB: requestView.privateMiB, hiddenPrivateMiB: hidden.privateMiB, visiblePrivateWorkingMiB: visible.privateWorkingMiB, requestPrivateWorkingMiB: requestView.privateWorkingMiB, hiddenPrivateWorkingMiB: hidden.privateWorkingMiB, collectionMs, restoreMs, scroll }));
 } finally {
 	if (app) await app.close();
 	assert.equal(path.dirname(path.resolve(scratch)), path.resolve(os.tmpdir()));

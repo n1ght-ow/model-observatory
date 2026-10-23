@@ -1,3 +1,6 @@
+export const UNRECORDED_CLIENT = "客户端未记录";
+export const UNRECORDED_CLIENT_REASON = "仅有路由证据，原始日志未保存客户端信息，也未能与客户端会话记录核对。";
+
 // Namespace removal is explicit. Versions, dates, fast/vision variants and unknown
 // aliases survive; a vendor family is never a model identity.
 const namespaces = new Set([

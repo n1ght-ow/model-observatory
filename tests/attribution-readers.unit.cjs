@@ -62,6 +62,9 @@ test("source readers project only confirmed attribution metadata and preserve co
 		{ type: "session_meta", payload: { id: "codex-session", cwd: "C:\\work\\codex", originator: "Codex CLI", source: { subagent: { spawn: { parent_thread_id: "codex-parent" } } } } },
 		{ type: "turn_context", payload: { model: "codex-model", cwd: "C:\\work\\codex-turn" } },
 		{ timestamp: "2026-10-18T01:00:00.000Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 10, output_tokens: 2, cached_input_tokens: 1 }, total_token_usage: { input_tokens: 10, output_tokens: 2 } } } },
+		{ timestamp: "2026-10-18T01:00:01.000Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 10, output_tokens: 2, cached_input_tokens: 1 }, total_token_usage: { input_tokens: 20, output_tokens: 4 } } } },
+		{ type: "turn_context", payload: { model: "codex-model", cwd: "C:\\work\\codex-changed" } },
+		{ timestamp: "2026-10-18T01:00:02.000Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 10, output_tokens: 2, cached_input_tokens: 1 }, total_token_usage: { input_tokens: 30, output_tokens: 6 } } } },
 	]);
 	writeFixture(".codex/sessions/2026/10/18/meta.jsonl", [
 		{ type: "session_meta", payload: { id: "codex-meta-session", cwd: "C:\\work\\codex-meta", originator: "Codex Desktop" } },
@@ -143,6 +146,12 @@ test("source readers project only confirmed attribution metadata and preserve co
 	assert.equal(codex.attribution.project.path, "C:/work/codex-turn");
 	assert.equal(codex.attribution.session.client, "Codex");
 	assert.equal(codex.attribution.parentSession.id, "codex-parent");
+	const codexTurns = sourceRows(first, "codex").filter((row) => row.attribution.session.id === "codex-session");
+	assert.equal(codexTurns.length, 3);
+	assert.equal(codexTurns[0].attribution, codexTurns[1].attribution);
+	assert.ok(Object.isFrozen(codexTurns[0].attribution));
+	assert.notEqual(codexTurns[0].attribution, codexTurns[2].attribution);
+	assert.equal(codexTurns[2].attribution.project.path, "C:/work/codex-changed");
 	const codexMeta = sourceRows(first, "codex").find((row) => row.attribution.session.id === "codex-meta-session");
 	assert.equal(codexMeta.client, "Codex Desktop");
 	assert.equal(codexMeta.attribution.project.path, "C:/work/codex-meta");
@@ -243,6 +252,10 @@ test("source readers project only confirmed attribution metadata and preserve co
 		{ type: "session", id: 42, cwd: "relative/path" },
 		{ type: "assistant/message", time: Date.parse("2026-10-18T01:07:00.000Z"), data: { turn: 1, step: 1, message: { source: { model: "dsh-invalid-model" } }, usage: { inputTokens: 1, outputTokens: 1 } } },
 	]);
+	writeFixture(".dsh/sessions/null-id/session.jsonl", [
+		{ type: "session", id: null },
+		{ type: "assistant/message", time: Date.parse("2026-10-18T01:08:00.000Z"), data: { turn: 1, step: 1, message: { source: { model: "dsh-null-id-model" } }, usage: { inputTokens: 1, outputTokens: 1 } } },
+	]);
 
 	const second = await collectObservations();
 	const fallback = second.observations.find((row) => row.rawModel === "dsh-fallback-model");
@@ -254,6 +267,10 @@ test("source readers project only confirmed attribution metadata and preserve co
 	assert.equal(invalid.attribution.session.reason, "invalid-id");
 	assert.equal(invalid.attribution.project.status, "invalid");
 	assert.equal(invalid.attribution.project.reason, "invalid-path");
+	const nullId = second.observations.find((row) => row.rawModel === "dsh-null-id-model");
+	assert.equal(nullId.attribution.session.status, "invalid");
+	assert.equal(nullId.attribution.session.reason, "invalid-id");
+	assert.notEqual(nullId.attribution, fallback.attribution, "Null and an absent identifier carry different evidence");
 
 	const fallbackAgain = (await collectObservations()).observations.find((row) => row.rawModel === "dsh-fallback-model");
 	assert.equal(fallbackAgain.id, fallback.id, "path fallback may stabilize the event id but not the session attribution");

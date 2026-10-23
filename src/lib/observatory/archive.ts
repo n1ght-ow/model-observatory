@@ -1,8 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { freezeEventAttribution, mergeEventAttribution } from "./attribution";
-import type { Coverage, ModelEvent } from "./types";
+import type { AttributionValue, Coverage, ModelEvent } from "./types";
 
 export type CollectionState = { paused: boolean; collectedAt: string | null; observations: number };
 
@@ -12,6 +13,7 @@ export class ObservationArchive {
 	private dataVersion = -1;
 	private accepted = new Map<string, ModelEvent>();
 	private strings = new Map<string, string>();
+	private attributionValues = new Map<string, AttributionValue>();
 	private loaded = false;
 	private observationRevision = 0;
 	get revision() { return this.observationRevision; }
@@ -58,7 +60,7 @@ export class ObservationArchive {
 		if (version !== this.dataVersion) {
 			this.observationRevision++;
 			this.dataVersion = version;
-			this.accepted.clear(); this.strings.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedIds = undefined;
+			this.accepted.clear(); this.strings.clear(); this.attributionValues.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedIds = undefined;
 		}
 	}
 	private ids() {
@@ -85,11 +87,13 @@ export class ObservationArchive {
 			if (this.value("paused") === "true") { this.db.exec("ROLLBACK"); return false; }
 			// Stream fragments and copied logs can replay an older, shorter revision.
 			let changed = false, recordsChanged = false;
-			const storedIds = this.ids();
+			// A fully loaded archive already has every ID in accepted. A second
+			// SQLite-decoded ID set would duplicate all historical keys.
+			const storedIds = this.loaded ? undefined : this.ids();
 			for (const incoming of observations) {
 				let previous = this.accepted.get(incoming.id);
 				if (previous === incoming) continue;
-				if (!previous && storedIds.has(incoming.id)) {
+				if (!previous && storedIds?.has(incoming.id)) {
 					const serialized = String(this.readEvent.get(incoming.id)?.event ?? "");
 					if (serialized) {
 						previous = this.decode(serialized);
@@ -104,12 +108,14 @@ export class ObservationArchive {
 				const event = attribution
 					? advancesUsage ? { ...incoming, attribution } : { ...previous!, attribution }
 					: advancesUsage ? incoming : previous!;
-				if (previous && JSON.stringify(previous) === JSON.stringify(event)) continue;
+				// Cold catch-up replays the retained history. Compare its metadata
+				// directly before allocating two full JSON strings for each row.
+				if (previous && (isDeepStrictEqual(previous, event) || JSON.stringify(previous) === JSON.stringify(event))) continue;
 				const serialized = JSON.stringify(event);
 				const inserted = Number(this.insertEvent.run(event.id, serialized).changes);
 				if (inserted) {
-					this.accepted.set(event.id, this.immutable(event)); this.observations = undefined; changed = true; recordsChanged = true;
-					storedIds.add(event.id);
+					this.accepted.set(event.id, this.immutable(event, Boolean(attribution))); this.observations = undefined; changed = true; recordsChanged = true;
+					storedIds?.add(event.id);
 				}
 			}
 			const encodedCoverage = JSON.stringify(coverage);
@@ -122,13 +128,43 @@ export class ObservationArchive {
 			return true;
 		} catch (error) { this.db.exec("ROLLBACK"); this.accepted.clear(); this.loaded = false; this.observations = undefined; this.cachedRead = undefined; this.cachedState = undefined; this.storedIds = undefined; throw error; }
 	}
-	private immutable(event: ModelEvent) {
+	private immutable(event: ModelEvent, owned = false) {
+		// Decoded rows and commit-created revisions belong to the archive. Share
+		// their metadata just as on disk load without modifying reader records.
+		if (owned) {
+			event.model = this.shared(event.model); event.rawModel = this.shared(event.rawModel);
+			event.client = this.shared(event.client); event.upstream = this.shared(event.upstream);
+			event.status = this.shared(event.status); event.identity = this.shared(event.identity);
+			if (event.scope) event.scope = this.shared(event.scope);
+		}
+		if (event.attribution) {
+			const original = event.attribution;
+			const project = this.sharedAttribution(original.project), session = this.sharedAttribution(original.session);
+			const parentSession = original.parentSession && this.sharedAttribution(original.parentSession);
+			// Reader records may already be published. Replace the wrapper rather
+			// than changing a record another cache still owns.
+			if (project !== original.project || session !== original.session || parentSession !== original.parentSession) {
+				const attribution = { project, session, ...(parentSession ? { parentSession } : {}) };
+				if (owned) event.attribution = attribution;
+				else event = { ...event, attribution };
+			}
+		}
 		// Readers publish revisions as new objects. Sharing these immutable records
 		// avoids retaining both a JSON string and several decoded copies per row.
 		for (const evidence of event.evidence) Object.freeze(evidence);
 		Object.freeze(event.evidence);
 		if (event.attribution) freezeEventAttribution(event.attribution);
 		return Object.freeze(event);
+	}
+	private sharedAttribution(value: AttributionValue) {
+		// The complete value includes status, provenance and conflict candidates;
+		// a project/session key alone cannot establish identical evidence.
+		const key = JSON.stringify(value);
+		const previous = this.attributionValues.get(key);
+		if (previous) return previous;
+		if (this.attributionValues.size >= 4096) this.attributionValues.delete(this.attributionValues.keys().next().value!);
+		this.attributionValues.set(key, value);
+		return value;
 	}
 	private shared<T extends string>(value: T): T {
 		const previous = this.strings.get(value);
@@ -143,16 +179,11 @@ export class ObservationArchive {
 		// JSON gives every row its own copies of long model and source names.
 		// Share them before publishing, without changing immutable reader records.
 		const event = JSON.parse(serialized) as ModelEvent;
-		event.model = this.shared(event.model); event.rawModel = this.shared(event.rawModel);
-		event.client = this.shared(event.client); event.upstream = this.shared(event.upstream);
-		event.status = this.shared(event.status); event.identity = this.shared(event.identity);
-		if (event.scope) event.scope = this.shared(event.scope);
-		if (event.attribution) freezeEventAttribution(event.attribution);
 		for (const evidence of event.evidence) {
 			evidence.source = this.shared(evidence.source); evidence.kind = this.shared(evidence.kind);
 			if (evidence.id === event.id) evidence.id = event.id;
 		}
-		return this.immutable(event);
+		return this.immutable(event, true);
 	}
 	read() {
 		this.checkExternalWrites();
@@ -165,7 +196,7 @@ export class ObservationArchive {
 					this.accepted.set(event.id === row.id ? event.id : String(row.id), event);
 				}
 			}
-			this.loaded = true; this.observations = undefined;
+			this.loaded = true; this.observations = undefined; this.storedIds = undefined;
 		}
 		const observations = this.observations ??= [...this.accepted.values()];
 		const coverage = JSON.parse(this.value("coverage") ?? "[]") as Coverage[];

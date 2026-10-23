@@ -8,6 +8,7 @@ import { listFiles } from "./files";
 import { readDshUsageEvents, releaseCommittedDsh } from "./sources/dsh";
 import { readCursor } from "./sources/cursor";
 import { scanJsonl } from "./jsonl";
+import { UNRECORDED_CLIENT } from "./identity";
 import { freezeEventAttribution, projectAttribution, sessionAttribution, unsupportedAttribution } from "./attribution";
 import type { Coverage, ModelEvent, ModelEventAttribution } from "./types";
 
@@ -16,6 +17,18 @@ const num = (value: unknown): number => typeof value === "number" && Number.isFi
 const obj = (value: unknown) => (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
 const text = (value: unknown, fallback = "") => typeof value === "string" ? value : fallback;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 20);
+const attributionCache = new Map<string, ModelEventAttribution>();
+let attributionCacheBytes = 0;
+function cacheAttribution(key: string | undefined, value: ModelEventAttribution) {
+	if (key !== undefined) {
+		while (attributionCache.size && (attributionCache.size >= 1024 || attributionCacheBytes + key.length * 2 > 2 * 1024 * 1024)) {
+			const oldest = attributionCache.keys().next().value!;
+			attributionCache.delete(oldest); attributionCacheBytes -= oldest.length * 2;
+		}
+		attributionCache.set(key, value); attributionCacheBytes += key.length * 2;
+	}
+	return value;
+}
 
 function eventAttribution(
 	source: string,
@@ -24,25 +37,36 @@ function eventAttribution(
 	sessionId?: unknown,
 	parentSessionId?: unknown,
 ): ModelEventAttribution {
+	// A cold scan can emit thousands of calls from the same session before its
+	// first commit. Share immutable ownership while those rows are still pending.
+	// Invalid types bypass the cache; null must not alias an absent identifier.
+	const values = [project?.id, project?.path, sessionId, parentSessionId];
+	const encoded = values.every((value) => value === undefined || (typeof value === "string" && value.length <= 4096)) ? JSON.stringify(["fields", source, client, ...values]) : undefined;
+	const key = encoded && encoded.length <= 8192 ? encoded : undefined;
+	const previous = key === undefined ? undefined : attributionCache.get(key);
+	if (previous) return previous;
 	const projectValue = projectAttribution({ source, client, id: project?.id, path: project?.path });
-	return freezeEventAttribution({
+	return cacheAttribution(key, freezeEventAttribution({
 		project: projectValue,
 		session: sessionAttribution({ source, client, id: sessionId }),
 		parentSession: sessionAttribution({ source, client, id: parentSessionId }),
-	});
+	}));
 }
 
 function unsupportedEventAttribution(source: string, client: string): ModelEventAttribution {
-	return freezeEventAttribution({
+	const key = JSON.stringify(["unsupported", source, client]);
+	const previous = attributionCache.get(key);
+	if (previous) return previous;
+	return cacheAttribution(key, freezeEventAttribution({
 		project: unsupportedAttribution(source, client),
 		session: unsupportedAttribution(source, client),
 		parentSession: unsupportedAttribution(source, client),
-	});
+	}));
 }
 
 function event(source: string, identity: string, at: string, model: string, client: string, fields: Partial<ModelEvent> = {}): ModelEvent {
 	const id = hash(`${source}:${identity}`);
-	return { id, at, rawModel: model, model, client, upstream: "未记录", input: null, output: null, cache: null, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source, kind: "session" }], attribution: eventAttribution(source, client), ...fields };
+	return { id, at, rawModel: model, model, client, upstream: "未记录", input: null, output: null, cache: null, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source, kind: "session" }], attribution: fields.attribution ?? eventAttribution(source, client), ...fields };
 }
 
 export function discardCodexPrefix(prefix: string) {
@@ -115,13 +139,13 @@ async function readRouter(): Promise<ModelEvent[]> {
 		if (!row.at || !row.model) return [];
 		const status = num(row.status);
 		const id = text(row.requestId, String(line));
-		const result = event("router", id, text(row.at), text(row.responseModel, text(row.model)), "未识别工具", {
+		const result = event("router", id, text(row.at), text(row.responseModel, text(row.model)), UNRECORDED_CLIENT, {
 			requestId: text(row.requestId) || undefined, upstream: text(row.provider, "未记录"),
 			input: typeof row.inputTokens === "number" ? num(row.inputTokens) : null,
 			output: typeof row.outputTokens === "number" ? num(row.outputTokens) : null,
 			cache: typeof row.cachedInputTokens === "number" ? num(row.cachedInputTokens) : null,
 			status: status >= 400 ? "error" : status >= 200 ? "ok" : "unknown", duration: num(row.durationMs) || null,
-			attribution: unsupportedEventAttribution("router", "未识别工具"),
+			attribution: unsupportedEventAttribution("router", UNRECORDED_CLIENT),
 		});
 		result.evidence[0].kind = "router";
 		return [result];
@@ -324,6 +348,7 @@ const readers: Reader[] = [
 
 /** The archive owns committed rows; unchanged databases need only a signature. */
 export function releaseCommittedReaders() {
+	attributionCache.clear(); attributionCacheBytes = 0;
 	for (const database of databases.values()) database.rows = [];
 	releaseCommittedDsh();
 }

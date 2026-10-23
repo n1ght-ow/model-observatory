@@ -214,6 +214,8 @@ export function mergeEventAttribution(previous?: ModelEventAttribution, incoming
 	const project = mergeAttribution(previous?.project, incoming?.project) ?? unknownValue(null, undefined, "missing", "legacy");
 	const session = mergeAttribution(previous?.session, incoming?.session) ?? unknownValue(null, undefined, "missing", "legacy");
 	const parentSession = mergeAttribution(previous?.parentSession, incoming?.parentSession);
+	if (previous && project === previous.project && session === previous.session && parentSession === previous.parentSession) return freezeEventAttribution(previous);
+	if (incoming && project === incoming.project && session === incoming.session && parentSession === incoming.parentSession) return freezeEventAttribution(incoming);
 	const result: ModelEventAttribution = { project, session };
 	if (parentSession) result.parentSession = parentSession;
 	return freezeEventAttribution(result);

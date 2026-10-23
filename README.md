@@ -44,7 +44,7 @@ Windows 安装包尚未使用商业代码签名证书，系统可能提示未知
 
 调用活动使用固定高度的细柱图，标题与请求 / Token 切换紧凑排列，不常驻说明文字。悬停、点击或键盘聚焦时段时，在图中显示紧凑浮层，只保留时间、具体模型、请求数和已记录 Token；同一天的结束时间省略重复日期，单模型不再重复总量，多模型才显示合计。明细随当前图表指标排序，模型较多时可在浮层内滚动；左右方向键切换时段，Esc 或点击外部关闭。缺失 Token 显示“—”，列名明确为已记录用量，辅助读屏提供完整用量请求数；输入 / 输出拆分及部分用量覆盖仍在模型账本查看，缓存不重复计入 Token。轴文字保持固定字号，深浅主题与窄窗口共享同一套图表层次，浮层自动避让窗口边缘，窄屏优先放在图上方以免挡住时段操作。
 
-- `/`：模型总览，独占全局请求、Token 和缓存统计；具体模型账本位于活动趋势之前。展开模型可核对工具分布、原始名称和模型身份依据，并钻取请求。配置名称明确标记，不代表响应已验证。
+- `/`：模型总览，独占全局请求、Token 和缓存统计；具体模型账本位于活动趋势之前。展开模型可核对工具分布、原始名称和模型身份依据，并钻取请求。配置名称明确标记，不代表响应已验证。最近调用以北京时间分两行显示完整日期与秒级时间，缺失或非法时间显示“—”。
 - `/projects`：项目账本，按当前时间范围内的请求数或已记录 Token 排序。项目以可靠来源、规范化路径或来源稳定 `project_id` 区分，同名不同路径不会合并；列表显示涉及模型数与最近活动，详情列出当前项目下的最终模型和关联会话，并提供未知项目入口。
 - `/sessions`：会话账本，显示可靠会话 ID、来源 / 工具、项目归属、请求数、已记录 Token、涉及模型数和范围内最近活动。详情补充范围内首末活动、完整用量覆盖、归属依据及最终模型，并提供未知会话入口。
 - `/requests`：逐请求流水，提供时间 / 模型 / 工具 / 项目 / 会话 / 未知归属 / 关键词筛选、结果条数、50 条分页、原始证据和 CSV 导出。不重复总览统计；“导出筛选结果”导出全部匹配记录，不局限于当前页。
@@ -105,7 +105,7 @@ Codex 增量读取最多检查行首 512 字节，在明确识别为响应正文
 | --- | --- | --- | --- |
 | Cursor | `%APPDATA%/Cursor/User/globalStorage/state.vscdb` 的请求元数据 | 会话：`composerData:<composer>` / `bubbleId:<composer>:*` 中的 composer；项目、父会话：未知 | 按 requestId 合并分叉副本；只计有响应的会话请求轮次，不能代表内部逐步模型调用。模型取自当轮配置，Token 保持未知；不读取对话和认证字段 |
 | Codex CLI / Desktop | `~/.codex/sessions` 和 `archived_sessions` 的 token_count | 会话：`session_meta.payload.id`；项目：`session_meta.payload.cwd` 或 `turn_context.payload.cwd`；父会话：`session_meta.payload.source.subagent.spawn.parent_thread_id` | 跳过重复累计快照；模型取自当次 turn_context，未确认响应模型时标记 configured。事件工具仍区分 CLI / Desktop，归属命名空间统一为 Codex |
-| Codex Router | `~/.codex/codex-router/usage-events.jsonl` | 项目、会话、父会话：`source-unsupported` | 优先 responseModel，否则使用日志 model；不猜测未识别的调用工具 |
+| Codex Router | `~/.codex/codex-router/usage-events.jsonl` | 项目、会话、父会话：`source-unsupported` | 优先 responseModel，否则使用日志 model；无法与客户端记录核对时统一显示“客户端未记录”，不从路由名称猜测客户端 |
 | DeepSeek Harness | `~/.dsh/sessions` 的原始压缩 usage | 会话：session header `id`；项目：session header `cwd`；父会话：未投影 | 复用文件格式解码，不采用 CC Switch 导入。文件路径 fallback 只稳定原请求 ID，不作为可靠 session |
 | pi | `~/.pi/agent/sessions` | 会话：session header `id`；项目：session header `cwd`；父会话：未知 | 按原始 message id 计数，输入包含 cacheRead/cacheWrite。`parentSession` 通常保存父日志路径，不把路径伪造为父 session ID |
 | ZCode | `~/.zcode/cli/db/db.sqlite` 的 model_usage | `PRAGMA table_info` 后读取 `model_usage.session_id`、`session.directory`、`session.project_id`、`session.parent_id` | 每个实际 attempt 分别计数；读取 completed/error/cancelled；input_tokens 已含缓存 |
@@ -113,11 +113,17 @@ Codex 增量读取最多检查行首 512 字节，在明确识别为响应正文
 | Claude Code | `~/.claude/projects` 的 assistant message | 会话：assistant row `sessionId`；项目：assistant row `cwd`；父会话：未知 | 相同 message id 的流式更新只计一次；输入加缓存读写 |
 | Command Code CLI | `~/.commandcode/projects` 的原始 message usage | 项目、会话、父会话：`source-unsupported` | 读取逐请求，不把账户额度当调用次数 |
 | Grok CLI | `~/.grok/sessions` 的本地记录 | 项目、会话、父会话：`source-unsupported` | 缺少可靠调用时间与 Token，仅在全部历史计数；用量保持未知 |
-| ChatGPT 桌面端 / 网页 | 尚无逐请求 usage 接口 | 项目、会话：`source-unsupported` | 明确显示待接入；普通聊天不会自动写入 Codex/API 日志 |
+| ChatGPT 桌面端 / 网页 | 尚无逐请求 usage 接口 | 项目、会话：`source-unsupported` | 未覆盖说明放在“数字怎样算 → 已知边界”，不显示空占位卡片；普通聊天不会自动写入 Codex/API 日志 |
 
 SQLite 的主文件和 WAL 均参与缓存失效。JSONL 只解析已完成的行，半行等待下次刷新；文件截短后重新读取。来源读取失败只影响该来源，下次采集重试。
 
+客户端未记录的历史路由请求继续计入对应模型；模型展开详情解释证据缺口，流水筛选与 CSV 使用相同名称，不改写原始归档。采集覆盖只在统一事件接口已有记录或读取异常时显示该来源；空接口的接入方法保留在“数字怎样算 → 统一接入”。API 的覆盖信息仍保留未接入状态。
+
 本系统是**原始记录聚合器**，不是全机网络拦截器。无法读取的工具、封闭客户端加密流量、未落日志的失败与内部调用不应被声称为已覆盖。上游隐藏模型或使用不透明别名时，不可能仅凭本地配置确认真正执行的权重。页面保留证据与未验证状态。
+
+归档内存中内容完全相同的项目、会话与父会话归属共享不可变对象，共享池最多保留 4096 种完整值；比较包括来源、状态和全部冲突候选，不能仅按归属键合并。新入库记录与从磁盘加载的记录共用同一套模型、工具及路由元数据。完整账本加载后复用现有请求 ID 索引；冷启动补读直接比较未变化的元数据，避免为每条历史记录分配两份完整 JSON 字符串，归属未变时复用原包装对象。读取器已有显式归属时不再先创建会被覆盖的缺省归属。原始归档、统计口径及已发布记录保持不变。
+
+源读取期间也复用完全相同原始元数据对应的不可变归属，最多缓存 1024 种、编码键不超过 2 MiB，成功入库后释放。无效类型绕过缓存，不把未提供的标识与 `null` 混为一谈。
 
 ### 归属、隐私与未知
 

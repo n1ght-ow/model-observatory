@@ -10,7 +10,7 @@ require.extensions[".ts"] = (module, file) => {
 	const source = require("node:fs").readFileSync(file, "utf8");
 	module._compile(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
 };
-const { normalizeModel } = require("../src/lib/observatory/identity.ts");
+const { normalizeModel, UNRECORDED_CLIENT } = require("../src/lib/observatory/identity.ts");
 const { reconcile, makeSnapshot, eventTimes, nextSnapshotChange } = require("../src/lib/observatory/ledger.ts");
 const { timeBounds, validCustomDates } = require("../src/lib/observatory/time-range.ts");
 const { scanJsonl, releaseCommittedJsonl } = require("../src/lib/observatory/jsonl.ts");
@@ -121,6 +121,37 @@ test("archive caches remain correct after unchanged replay, revised usage and an
 	} finally { first.close(); second.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("archive shares complete attribution values without merging distinct evidence", async () => {
+	const { projectAttribution, sessionAttribution } = require("../src/lib/observatory/attribution.ts");
+	const dir = await mkdtemp(join(tmpdir(), "observatory-shared-attribution-"));
+	const file = join(dir, "history.sqlite");
+	let archive = new ObservationArchive(file);
+	const attribution = () => ({ project: projectAttribution({ source: "codex", path: "D:/dashboard" }), session: sessionAttribution({ source: "codex", id: "shared-session" }) });
+	const first = row("first", { attribution: attribution() }), second = row("second", { attribution: attribution() });
+	const distinct = row("distinct", { attribution: { ...attribution(), project: projectAttribution({ source: "other-reader", path: "D:/dashboard" }) } });
+	try {
+		archive.commit([first, second, distinct], []);
+		assert.notEqual(first.attribution.project, second.attribution.project, "Published reader records stay unchanged");
+		for (let pass = 0; pass < 2; pass++) {
+			const snapshot = archive.read();
+			const [a, b, c] = snapshot.observations;
+			assert.equal(a.attribution.project, b.attribution.project);
+			assert.equal(a.attribution.session, b.attribution.session);
+			assert.notEqual(a.attribution.project, c.attribution.project, "Equal project keys do not erase different provenance");
+			assert.deepEqual(JSON.parse(JSON.stringify(a.attribution)), JSON.parse(JSON.stringify(first.attribution)));
+			assert.deepEqual(JSON.parse(JSON.stringify(c.attribution)), JSON.parse(JSON.stringify(distinct.attribution)));
+			assert.ok(Object.isFrozen(a.attribution.project.candidates[0]));
+			archive.commit([first, second, distinct].map((event) => Object.fromEntries(Object.entries(event).reverse())), []);
+			assert.equal(archive.read(), snapshot, "Metadata key order must not revise retained history");
+			// An optional undefined field is equivalent to its archived absence.
+			archive.commit([first, second, distinct].map((event) => ({ ...event, scope: undefined })), []);
+			assert.equal(archive.read(), snapshot);
+			archive.close();
+			archive = new ObservationArchive(file);
+		}
+	} finally { archive.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("archive shares immutable reader records, keeps prior snapshots stable and rolls back rejected writes", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "observatory-sharing-"));
 	const file = join(dir, "history.sqlite");
@@ -163,6 +194,28 @@ test("reconciliation does not mutate shared observations through aliases, revisi
 	const mapped = reconcile(rows, { "separate-model": "renamed-model" });
 	assert.equal(mapped.events.find((r) => r.id === "unchanged").model, "renamed-model");
 	assert.equal(rows[3].model, "separate-model");
+});
+
+test("legacy router clients use one missing-client label without changing evidence, totals or known clients", () => {
+	const legacy = route("legacy", { input: 2000, output: 200 });
+	const current = route("current", { client: UNRECORDED_CLIENT, input: 3000, output: 300 });
+	const known = row("known", { client: "DeepSeek Harness" });
+	for (const event of [legacy, current, known]) Object.freeze(event);
+	const snapshot = makeSnapshot([legacy, current, known], [], "all", {}, now);
+	assert.equal(snapshot.totals.requests, 3);
+	assert.equal(snapshot.totals.input, 6000);
+	assert.equal(snapshot.totals.output, 600);
+	assert.deepEqual(Object.fromEntries(snapshot.models[0].clients.map(({ name, requests }) => [name, requests])), { [UNRECORDED_CLIENT]: 2, "DeepSeek Harness": 1 });
+	assert.equal(legacy.client, "未识别工具");
+	assert.equal(reconcile([legacy, current, known]).events.find((event) => event.id === "known"), known);
+	const matched = reconcile([route("matched"), known]);
+	assert.equal(matched.events.length, 1);
+	assert.equal(matched.events[0].client, "DeepSeek Harness");
+	assert.equal(matched.events[0].evidence.length, 2);
+	assert.equal(known.evidence.length, 1);
+	const ambiguous = reconcile([route("ambiguous"), known, row("other")]);
+	assert.equal(ambiguous.pending[0].client, UNRECORDED_CLIENT);
+	assert.equal(ambiguous.events.length, 2);
 });
 
 test("reopened archives share bounded metadata without changing names or immutable evidence", async () => {
