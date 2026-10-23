@@ -1,0 +1,52 @@
+{
+  "testedAt": "2026-10-19T18:04:20.471Z",
+  "errors": [],
+  "consoleErrors": [],
+  "resourceErrors": [],
+  "pages": [
+    {
+      "route": "/projects",
+      "clientNavigation": true,
+      "reload": true,
+      "fullNavigation": true
+    },
+    {
+      "route": "/sessions",
+      "clientNavigation": true,
+      "reload": true,
+      "fullNavigation": true
+    }
+  ],
+  "backgroundCollectionAdvanced": true,
+  "hashes": [
+    {
+      "relative": "ModelObservatory.exe",
+      "installed": "56a1ca97d232c8359dd95545f75e7056ab53c52f124d75cd0aa3f2bcf1473755",
+      "packaged": "56a1ca97d232c8359dd95545f75e7056ab53c52f124d75cd0aa3f2bcf1473755",
+      "matches": true
+    },
+    {
+      "relative": "resources/app.asar",
+      "installed": "9ab366d59f9d120d79407c8187fc86bd5d45a8246ea6a394860a70cccd830fa5",
+      "packaged": "9ab366d59f9d120d79407c8187fc86bd5d45a8246ea6a394860a70cccd830fa5",
+      "matches": true
+    },
+    {
+      "relative": "resources/server/server.cjs",
+      "installed": "f0f004ada40ffa569900138c185697f3c189b6e7b41d50efc5516a12087d7cdf",
+      "packaged": "f0f004ada40ffa569900138c185697f3c189b6e7b41d50efc5516a12087d7cdf",
+      "matches": true
+    }
+  ],
+  "bundleMatch": {
+    "comparedFiles": 141,
+    "mismatches": []
+  },
+  "passed": true,
+  "app": {
+    "version": "0.2.8",
+    "packaged": true,
+    "softwareDrawing": true,
+    "visible": true
+  }
+}

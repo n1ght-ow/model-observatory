@@ -1,0 +1,53 @@
+{
+  "verifiedAt": "2026-10-19T13:28:00.112Z",
+  "commands": {
+    "npm test": {
+      "exit": 0,
+      "passed": 52,
+      "log": "unit-verification.log"
+    },
+    "npm run lint": {
+      "exit": 0,
+      "warnings": 0,
+      "log": "lint-verification.log"
+    },
+    "npx tsc --noEmit": {
+      "exit": 0,
+      "log": "types-verification.log"
+    },
+    "npm run desktop:build": {
+      "exit": 0,
+      "serviceSha256": "cc4e0db56b7e09c8a223ed9e92270ae5e20aebef31f2094471bef12e3640dede"
+    },
+    "npm run test:desktop": {
+      "exit": 0,
+      "checks": 15,
+      "report": "../desktop-acceptance/report.json"
+    },
+    "npm run test:ui": {
+      "exit": 0,
+      "checks": 15,
+      "report": "../desktop-ui-acceptance/e2e.json"
+    },
+    "git diff --check": {
+      "exit": 0,
+      "log": "diff-verification.log"
+    }
+  },
+  "extraReaderTest": {
+    "exit": 0,
+    "passed": 1,
+    "log": "readers-verification.log"
+  },
+  "independentRawRecalculation": {
+    "checks": 216,
+    "stableSamples": 345,
+    "allApplicationPids": 5,
+    "status": "pass"
+  },
+  "installedAcceptance": "not performed",
+  "formalRuns": 12,
+  "formalSoakStatus": "interrupted",
+  "diagnosticStatus": "complete",
+  "mainInspectorStatus": "complete"
+}

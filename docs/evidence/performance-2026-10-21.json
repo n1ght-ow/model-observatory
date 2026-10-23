@@ -1,0 +1,358 @@
+{
+  "testedAt": "2026-10-21T03:35:36.637Z",
+  "independentRunsPerVersion": 3,
+  "fixture": "logs/performance/oct21-real-fixture",
+  "requests": 32809,
+  "fixtureHistorySha256": "081e13fd094d6d43c35d4630f10e501f67258750c044ef1d81bd33a122c2941e",
+  "phases": {
+    "visible": {
+      "before": {
+        "privateWorkingMedianMiB": 251.8359375,
+        "privateWorkingRunMinMiB": 249.96875,
+        "privateWorkingRunMaxMiB": 253.76953125,
+        "privateWorkingSamplePeakMiB": 253.8359375,
+        "privateCommitMedianMiB": 327.12890625
+      },
+      "after": {
+        "privateWorkingMedianMiB": 177.37109375,
+        "privateWorkingRunMinMiB": 177.04296875,
+        "privateWorkingRunMaxMiB": 179.80859375,
+        "privateWorkingSamplePeakMiB": 180.01171875,
+        "privateCommitMedianMiB": 250.486328125
+      },
+      "reductionPercent": 29.56879168605553
+    },
+    "requestView": {
+      "before": {
+        "privateWorkingMedianMiB": 196.25390625,
+        "privateWorkingRunMinMiB": 195.99609375,
+        "privateWorkingRunMaxMiB": 198.68359375,
+        "privateWorkingSamplePeakMiB": 199.9609375,
+        "privateCommitMedianMiB": 269.91796875
+      },
+      "after": {
+        "privateWorkingMedianMiB": 160.375,
+        "privateWorkingRunMinMiB": 159.28125,
+        "privateWorkingRunMaxMiB": 161.4140625,
+        "privateWorkingSamplePeakMiB": 164.0546875,
+        "privateCommitMedianMiB": 235.9609375
+      },
+      "reductionPercent": 18.281881331979857
+    },
+    "hidden": {
+      "before": {
+        "privateWorkingMedianMiB": 196.80078125,
+        "privateWorkingRunMinMiB": 188.859375,
+        "privateWorkingRunMaxMiB": 198.20703125,
+        "privateWorkingSamplePeakMiB": 198.703125,
+        "privateCommitMedianMiB": 268.83203125
+      },
+      "after": {
+        "privateWorkingMedianMiB": 157.1328125,
+        "privateWorkingRunMinMiB": 156.140625,
+        "privateWorkingRunMaxMiB": 157.921875,
+        "privateWorkingSamplePeakMiB": 158.3359375,
+        "privateCommitMedianMiB": 229.240234375
+      },
+      "reductionPercent": 20.15640816974653
+    }
+  },
+  "artifacts": {
+    "before": {
+      "appAsarSha256": "9ab366d59f9d120d79407c8187fc86bd5d45a8246ea6a394860a70cccd830fa5",
+      "serverCjsSha256": "f0f004ada40ffa569900138c185697f3c189b6e7b41d50efc5516a12087d7cdf"
+    },
+    "after": {
+      "appAsarSha256": "9ab366d59f9d120d79407c8187fc86bd5d45a8246ea6a394860a70cccd830fa5",
+      "serverCjsSha256": "dc828698456b289a4c8cfd067b772d19618b11b2eb796b1f2b9cc43f2d35d2c2"
+    }
+  },
+  "runs": {
+    "before": [
+      "oct21-real-before-1",
+      "oct21-real-before-2",
+      "oct21-real-before-3"
+    ],
+    "after": [
+      "oct21-final-after-1",
+      "oct21-final-after-2",
+      "oct21-final-after-3"
+    ]
+  },
+  "scrollP95Ms": {
+    "before": [
+      12.19999999999709,
+      12.19999999999709,
+      12.19999999999709
+    ],
+    "after": [
+      12.19999999999709,
+      12.19999999999709,
+      12.19999999999709
+    ]
+  },
+  "installed": {
+    "state": {
+      "packaged": true,
+      "version": "0.2.8",
+      "executable": "<user-home>\\AppData\\Local\\Programs\\ModelObservatory\\ModelObservatory.exe",
+      "hardwareAcceleration": false
+    },
+    "phases": {
+      "initial-today": {
+        "minMiB": 174.734375,
+        "maxMiB": 245.6953125
+      },
+      "overview-all": {
+        "minMiB": 163.37890625,
+        "maxMiB": 188.18359375
+      },
+      "requests-all": {
+        "minMiB": 171.328125,
+        "maxMiB": 175.59765625
+      },
+      "hidden": {
+        "minMiB": 170.859375,
+        "maxMiB": 171.54296875
+      },
+      "restored-overview": {
+        "minMiB": 169.26171875,
+        "maxMiB": 176.73046875
+      }
+    },
+    "overviewAllPrivateCommitMiB": [
+      272.9609375,
+      247.19921875,
+      255.9453125,
+      258.37109375
+    ],
+    "nextCollectionVerified": true,
+    "comparedResourceFiles": 67,
+    "errors": [],
+    "consoleErrors": [],
+    "fullNavigationStressPhases": {
+      "overview-all": {
+        "minMiB": 230.71484375,
+        "maxMiB": 347.4609375
+      },
+      "requests-all": {
+        "minMiB": 210.26171875,
+        "maxMiB": 231.28125
+      },
+      "hidden": {
+        "minMiB": 200.21875,
+        "maxMiB": 201.8828125
+      },
+      "restored-overview": {
+        "minMiB": 201.73046875,
+        "maxMiB": 207.64453125
+      }
+    },
+    "fullNavigationStressRoutes": [
+      {
+        "route": "/",
+        "heading": "模型总览"
+      },
+      {
+        "route": "/projects",
+        "heading": "项目账本"
+      },
+      {
+        "route": "/sessions",
+        "heading": "会话账本"
+      },
+      {
+        "route": "/requests",
+        "heading": "请求流水"
+      },
+      {
+        "route": "/tools",
+        "heading": "接入与口径"
+      }
+    ],
+    "standardLaunch": {
+      "method": "Normal installed EXE launch without Playwright/inspectors; five samples at least 15 seconds apart, all installed executable PIDs; the responding model-overview window remains open and live collection remains enabled.",
+      "samples": [
+        {
+          "at": "2026-10-21T03:34:15.6023111Z",
+          "privateWorkingMiB": 171.1484375,
+          "privateCommitMiB": 255.45703125,
+          "processes": [
+            {
+              "IDProcess": 18480,
+              "WorkingSetPrivate": 27377664,
+              "PrivateBytes": 37044224
+            },
+            {
+              "IDProcess": 21876,
+              "WorkingSetPrivate": 21884928,
+              "PrivateBytes": 28651520
+            },
+            {
+              "IDProcess": 36760,
+              "WorkingSetPrivate": 8880128,
+              "PrivateBytes": 13893632
+            },
+            {
+              "IDProcess": 164,
+              "WorkingSetPrivate": 76419072,
+              "PrivateBytes": 131641344
+            },
+            {
+              "IDProcess": 18440,
+              "WorkingSetPrivate": 44900352,
+              "PrivateBytes": 56635392
+            }
+          ]
+        },
+        {
+          "at": "2026-10-21T03:34:31.3519015Z",
+          "privateWorkingMiB": 159.359375,
+          "privateCommitMiB": 243.44921875,
+          "processes": [
+            {
+              "IDProcess": 18480,
+              "WorkingSetPrivate": 27484160,
+              "PrivateBytes": 37105664
+            },
+            {
+              "IDProcess": 21876,
+              "WorkingSetPrivate": 21942272,
+              "PrivateBytes": 28712960
+            },
+            {
+              "IDProcess": 36760,
+              "WorkingSetPrivate": 8871936,
+              "PrivateBytes": 13885440
+            },
+            {
+              "IDProcess": 164,
+              "WorkingSetPrivate": 64266240,
+              "PrivateBytes": 119910400
+            },
+            {
+              "IDProcess": 18440,
+              "WorkingSetPrivate": 44535808,
+              "PrivateBytes": 55660544
+            }
+          ]
+        },
+        {
+          "at": "2026-10-21T03:34:47.0520597Z",
+          "privateWorkingMiB": 151.87890625,
+          "privateCommitMiB": 234.91796875,
+          "processes": [
+            {
+              "IDProcess": 18480,
+              "WorkingSetPrivate": 25563136,
+              "PrivateBytes": 34725888
+            },
+            {
+              "IDProcess": 21876,
+              "WorkingSetPrivate": 21721088,
+              "PrivateBytes": 28499968
+            },
+            {
+              "IDProcess": 36760,
+              "WorkingSetPrivate": 8531968,
+              "PrivateBytes": 13459456
+            },
+            {
+              "IDProcess": 164,
+              "WorkingSetPrivate": 63885312,
+              "PrivateBytes": 119332864
+            },
+            {
+              "IDProcess": 18440,
+              "WorkingSetPrivate": 39555072,
+              "PrivateBytes": 50311168
+            }
+          ]
+        },
+        {
+          "at": "2026-10-21T03:35:02.7656802Z",
+          "privateWorkingMiB": 146.86328125,
+          "privateCommitMiB": 229.98046875,
+          "processes": [
+            {
+              "IDProcess": 18480,
+              "WorkingSetPrivate": 25608192,
+              "PrivateBytes": 35233792
+            },
+            {
+              "IDProcess": 21876,
+              "WorkingSetPrivate": 21696512,
+              "PrivateBytes": 28491776
+            },
+            {
+              "IDProcess": 36760,
+              "WorkingSetPrivate": 8507392,
+              "PrivateBytes": 13434880
+            },
+            {
+              "IDProcess": 164,
+              "WorkingSetPrivate": 59527168,
+              "PrivateBytes": 114659328
+            },
+            {
+              "IDProcess": 18440,
+              "WorkingSetPrivate": 38658048,
+              "PrivateBytes": 49332224
+            }
+          ]
+        },
+        {
+          "at": "2026-10-21T03:35:18.4687384Z",
+          "privateWorkingMiB": 148.06640625,
+          "privateCommitMiB": 230.65234375,
+          "processes": [
+            {
+              "IDProcess": 18480,
+              "WorkingSetPrivate": 25739264,
+              "PrivateBytes": 35229696
+            },
+            {
+              "IDProcess": 21876,
+              "WorkingSetPrivate": 21495808,
+              "PrivateBytes": 28258304
+            },
+            {
+              "IDProcess": 36760,
+              "WorkingSetPrivate": 8499200,
+              "PrivateBytes": 13422592
+            },
+            {
+              "IDProcess": 164,
+              "WorkingSetPrivate": 60469248,
+              "PrivateBytes": 115318784
+            },
+            {
+              "IDProcess": 18440,
+              "WorkingSetPrivate": 39055360,
+              "PrivateBytes": 49627136
+            }
+          ]
+        }
+      ],
+      "minPrivateWorkingMiB": 146.86328125,
+      "maxPrivateWorkingMiB": 171.1484375
+    }
+  },
+  "verification": {
+    "unitTests": 54,
+    "readerTests": 1,
+    "desktopChecks": 15,
+    "uiChecks": 15,
+    "build": true,
+    "lint": true,
+    "types": true,
+    "diffCheck": true
+  },
+  "method": "Three original-binary baselines and three independent final-binary runs on the same frozen real metadata-only history fixture, with an isolated home/profile. Original baselines were collected earlier in the session; final runs were sequential after the final build. All owned processes; raw native Windows private working-set samples and separate Electron private commitment. Real-source installed runs are separate. No forced GC, heap caps, trimming, graphics changes or collection interval changes.",
+  "limitations": [
+    "Normal installed All-history model overview and restored overview are measured separately from cold-start transients and full-navigation stress.",
+    "Cold catch-up and repeated full-navigation/refresh stress still exceed 200 MiB; this is not a hard memory ceiling.",
+    "PrivateBytes commitment remains above 200 MiB, even when private resident working set is below 200 MiB.",
+    "The earlier 30000-request high-session-cardinality synthetic stress also exceeded 200 MiB; savings depend on metadata repetition and workload."
+  ]
+}

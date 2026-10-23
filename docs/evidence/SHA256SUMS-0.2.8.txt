@@ -1,0 +1,2 @@
+330066d208caa950ac23cd783cd517b5fa60b60d12609259bef1d93ce813f913  Model-Observatory-0.2.8-Setup.exe
+f663ff44240b8225d4d29b070ef0b45d5aa65bc25c322e59f281fe7bc13736f3  Model-Observatory-0.2.8-Portable.exe

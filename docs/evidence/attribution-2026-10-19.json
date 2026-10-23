@@ -1,0 +1,24 @@
+{
+  "passed": [
+    "API 归属计数、重复合并、跨日范围与未知筛选符合独立 oracle",
+    "项目列表路径可区分、模型数、Token 排序、详情模型与组合请求链接",
+    "会话标识完整、同 ID 不同来源不合并、跨日详情与刷新范围保留",
+    "未知会话入口进入请求流水、返回保留范围、缺失 usage 覆盖明确",
+    "390px / 320px 导航与页面无水平溢出"
+  ],
+  "errors": [],
+  "resourceErrors": [],
+  "expected": {
+    "observations": 10,
+    "reconciledRequests": 9,
+    "knownProjects": 3,
+    "knownProjectRequests": 5,
+    "unknownProjectRequests": 4,
+    "knownSessions": 5,
+    "knownSessionRequests": 7,
+    "unknownSessionRequests": 2,
+    "recordedInputOutput": 318,
+    "completeUsage": 7
+  },
+  "testedAt": "2026-10-19T03:43:44.982Z"
+}

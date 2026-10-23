@@ -1,0 +1,122 @@
+{
+  "format": 1,
+  "publicationDate": "2026-10-23",
+  "repositoryHeadAtExport": "cb35dd47f466b362c1751306682e7c96553a4912",
+  "note": "Historical evidence exported without rerunning the recorded tests. Source hashes identify local originals; published hashes identify sanitized copies. Matching version numbers do not establish matching builds. Raw fixtures, samples and screenshots are not included.",
+  "reports": [
+    {
+      "source": "logs/desktop-acceptance/report.json",
+      "sourceBytes": 1507,
+      "sourceSha256": "d500fb0001b30ec3b5cd126631437e29aee06cbfd20cd3ceefa011f9c58bec18",
+      "published": "desktop-2026-10-23.json",
+      "publishedBytes": 1503,
+      "publishedSha256": "1ad85f4f2bfac9a6a57c5ce0e0461a3ed76725a78fbdfd2a4ed23f6ef3663723",
+      "removedFields": [],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/desktop-ui-acceptance/e2e.json",
+      "sourceBytes": 1303,
+      "sourceSha256": "34c64691f8f550308b298f7894f7834f98a48b90150acf72818b4debde3e8490",
+      "published": "ui-2026-10-23.json",
+      "publishedBytes": 1304,
+      "publishedSha256": "d81eb30b715658c566620bcc356027990fea2912de54e524d9422f6fc030b721",
+      "removedFields": [],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/attribution-ui.e2e.json",
+      "sourceBytes": 831,
+      "sourceSha256": "6c88c9799653622c2280b3971aa80e4d5d237476129dafd15208e996b95d1e06",
+      "published": "attribution-2026-10-19.json",
+      "publishedBytes": 832,
+      "publishedSha256": "65c3691904d6a70dcccb05ce3701929d11eda52ade4c9f73c47786a28099ec9f",
+      "removedFields": [],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/installed-release-acceptance/report.json",
+      "sourceBytes": 3038,
+      "sourceSha256": "28837f609d063de342c28954a159622fde694b6ea5d00735985ddf383cb7a6f7",
+      "published": "installed-2026-10-19.json",
+      "publishedBytes": 1386,
+      "publishedSha256": "819cfd0855a24533f80186810009e8aad4b2860bf0302f22f595f139634ae806",
+      "removedFields": [
+        "executablePath",
+        "startupCollection",
+        "initial",
+        "final",
+        "clientDisplay",
+        "app.executable",
+        "app.resources",
+        "app.userData"
+      ],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/runtime-memory/comparison.json",
+      "sourceBytes": 731101,
+      "sourceSha256": "9c81031a9ed89a05786cc021f052bf18f9160118c54838a80f797f3956e9284b",
+      "published": "runtime-memory-2026-10-19/comparison.json",
+      "publishedBytes": 731013,
+      "publishedSha256": "17700d69464f111f20fe932c1952986eb9b47db62421fd3d7cf189eed6741f37",
+      "removedFields": [],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/runtime-memory/verification.json",
+      "sourceBytes": 1239,
+      "sourceSha256": "8d80d316fc2991a84d73a441a691ed70e28fac7832fb2b7af849368653ac0f31",
+      "published": "runtime-memory-2026-10-19/verification.json",
+      "publishedBytes": 1240,
+      "publishedSha256": "d4a81b1572c572e17caa6eb4e395f3643257f76923c7dd90d711de8b7e1547aa",
+      "removedFields": [],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/performance/oct21-final-comparison.json",
+      "sourceBytes": 11085,
+      "sourceSha256": "d03f656ab12d5e6e2e72ca87c08a775ca5e6eee169f1ff61302b834233bd9716",
+      "published": "performance-2026-10-21.json",
+      "publishedBytes": 11060,
+      "publishedSha256": "849b8a256486d9adc154b857feaf9c577420d4dbafb525278572450e26b0f95a",
+      "removedFields": [
+        "installed.requests"
+      ],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    }
+  ],
+  "installers": [
+    {
+      "name": "Model-Observatory-0.2.8-Setup.exe",
+      "bytes": 112410348,
+      "sha256": "330066d208caa950ac23cd783cd517b5fa60b60d12609259bef1d93ce813f913"
+    },
+    {
+      "name": "Model-Observatory-0.2.8-Portable.exe",
+      "bytes": 112091970,
+      "sha256": "f663ff44240b8225d4d29b070ef0b45d5aa65bc25c322e59f281fe7bc13736f3"
+    }
+  ]
+}

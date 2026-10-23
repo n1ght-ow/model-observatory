@@ -82,3 +82,5 @@ Windows 本机模型用量账本：把 Codex、Cursor、pi、ZCode、DeepSeek Ha
 ## 技术文档
 
 原 README 的技术内容已完整保留在 **[技术文档](docs/technical-guide.md)**：包括源码构建命令、桌面架构、采集来源、数据与模型统计口径、接口接入、验证命令及性能测量说明。
+
+从源码构建请看 [仓库内容与开发步骤](docs/repository-contents.md)；核对验收结果、性能边界及下载文件校验值，请看 [公开证据](docs/evidence/README.md)。

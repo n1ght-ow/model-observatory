@@ -1,0 +1,2 @@
+# Published evidence hashes must survive checkout on Windows unchanged.
+docs/evidence/** text eol=lf

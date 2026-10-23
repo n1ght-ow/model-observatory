@@ -1,6 +1,8 @@
 # 桌面运行内存正式对照（2026-10-19）
 
-由 `scripts/summarize-runtime-memory.mjs` 从本轮 12 个 formal summary 与 raw samples 生成；完整字段见 [`comparison.json`](../logs/runtime-memory/comparison.json)，方法见 [`runtime-memory-method.md`](runtime-memory-method.md)。
+由 `scripts/summarize-runtime-memory.mjs` 从本轮 12 个 formal summary 与 raw samples 生成；对照 JSON 的公开副本见 [`comparison.json`](evidence/runtime-memory-2026-10-19/comparison.json)，方法见 [`runtime-memory-method.md`](runtime-memory-method.md)。
+
+公开副本的来源哈希与脱敏说明见 [证据索引](evidence/README.md)。下文的 `logs/...` 路径是历史本地来源，原始样本并未全部公开；本次发布不补做或改变当时的验证结论。
 
 ## 证据与可比性
 
