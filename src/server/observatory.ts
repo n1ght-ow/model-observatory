@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { getSnapshot } from "../lib/observatory/store";
 import { validCustomDates } from "../lib/observatory/time-range";
 import { eventAttribution, makeAttributionSelection, matchesAttribution } from "../lib/observatory/attribution";
+import { eventCost } from "../lib/observatory/pricing";
 import type { AttributionFilter, AttributionOverview, UnknownAttributionFilter, ModelEvent, ObservatorySnapshot } from "../lib/observatory/types";
 
 type AttributionView = "summary" | "projects" | "sessions" | "project" | "session" | "unknown" | "full";
@@ -28,7 +29,7 @@ function attributionView(snapshot: ObservatorySnapshot["attribution"], view: Att
 }
 
 function exposedRows(rows: ModelEvent[]) {
-	return rows.map((row) => row.attribution ? row : { ...row, attribution: eventAttribution(row) });
+	return rows.map((row) => ({ ...row, cost: eventCost(row), ...(row.attribution ? {} : { attribution: eventAttribution(row) }) }));
 }
 
 export async function GET(request: ApiRequest) {
@@ -68,14 +69,14 @@ export async function GET(request: ApiRequest) {
 			// Pull one bounded batch at a time. The HTTP stream applies backpressure
 			// and cancellation instead of holding several full CSV copies in memory.
 			function* csv() {
-				yield "\uFEFF" + ["时间", "模型", "原始模型", "工具", "路由", "输入Token含缓存", "输出Token", "缓存Token", "状态", "证据来源", "计数单位", "项目归属状态", "项目归属", "项目稳定标识", "项目原始ID", "项目工作目录", "会话归属状态", "会话归属", "会话稳定标识", "会话原始ID", "父会话稳定标识"].map(cell).join(",");
+				yield "\uFEFF" + ["时间", "模型", "原始模型", "工具", "路由", "输入Token含缓存", "输出Token", "缓存Token", "估算花费USD", "计价状态", "状态", "证据来源", "计数单位", "项目归属状态", "项目归属", "项目稳定标识", "项目原始ID", "项目工作目录", "会话归属状态", "会话归属", "会话稳定标识", "会话原始ID", "父会话稳定标识"].map(cell).join(",");
 				for (let offset = 0; offset < rows.length;) {
 					const batch: string[] = [];
 					const end = Math.min(offset + 128, rows.length);
 					while (offset < end) {
 						const r = rows[offset++];
-						const attribution = eventAttribution(r), projectValue = attribution.project, sessionValue = attribution.session;
-						batch.push([r.at, r.model, r.rawModel, r.client, r.upstream, r.input, r.output, r.cache, r.status, r.evidence.map((e) => e.source).join(" + "), r.scope === "turn" ? "会话请求轮次" : "模型调用 / 响应",
+						const attribution = eventAttribution(r), projectValue = attribution.project, sessionValue = attribution.session, cost = eventCost(r);
+						batch.push([r.at, r.model, r.rawModel, r.client, r.upstream, r.input, r.output, r.cache, cost === null ? "" : cost.toFixed(6), cost === null ? "未计价" : "已计价", r.status, r.evidence.map((e) => e.source).join(" + "), r.scope === "turn" ? "会话请求轮次" : "模型调用 / 响应",
 							projectValue.status, projectValue.label, projectValue.key, projectValue.id, projectValue.path,
 							sessionValue.status, sessionValue.label, sessionValue.key, sessionValue.id, attribution.parentSession?.key].map(cell).join(","));
 					}

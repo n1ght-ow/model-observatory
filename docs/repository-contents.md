@@ -8,7 +8,7 @@
 
 - [安装指南](../README.md)介绍版本选择、安装、升级和日常使用。
 - 安装包和免安装 EXE 放到 [GitHub Releases](https://github.com/n1ght-ow/model-observatory/releases) 的附件区，不放进源码目录。
-- [发行校验值](evidence/SHA256SUMS-0.2.8.txt)对应 2026-10-23 本地构建的两个 EXE。发布时应上传与校验值完全一致的文件；同版本号重新构建后，不能沿用旧校验值。
+- [发行校验值](evidence/SHA256SUMS-0.3.0.txt)对应 2026-10-29 本地构建的两个 EXE。发布时应上传与校验值完全一致的文件；同版本号重新构建后，不能沿用旧校验值。
 
 ## 给开发者
 

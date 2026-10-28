@@ -8,6 +8,8 @@
 
 | 日期 | 公开报告 | 说明 |
 | --- | --- | --- |
+| 2026-10-29 | [打包桌面验收](desktop-2026-10-29.json) | 0.3.0 的 15 项检查，包含成本界面、独立目录启动、资源限制、窗口生命周期及后台采集；源报告 errors 为空 |
+| 2026-10-29 | [界面验收](ui-2026-10-29.json) | 0.3.0 的 15 组检查，包含花费卡片 / 列 / 图表、CSV、筛选、主题及窄窗口；源报告 errors / resourceErrors 为空 |
 | 2026-10-23 | [打包桌面验收](desktop-2026-10-23.json) | 15 项检查，包含独立目录启动、资源限制、窗口生命周期及后台采集；源报告 errors 为空 |
 | 2026-10-23 | [界面验收](ui-2026-10-23.json) | 15 组检查，包含筛选、CSV、主题及窄窗口；源报告 errors / resourceErrors 为空 |
 | 2026-10-19 | [项目与会话验收](attribution-2026-10-19.json) | 5 组隔离 fixture 检查，保留独立期望值 |
@@ -16,17 +18,17 @@
 | 2026-10-19 | [当时的验证记录](runtime-memory-2026-10-19/verification.json) | 保留各项命令状态、原始重算结果及当时未做安装版验收的边界 |
 | 2026-10-21 | [后续性能对照](performance-2026-10-21.json) | 同一固定历史副本的各 3 轮前后对照及单列安装版测量；保留工作集、私有提交量的区别与限制 |
 
-测量方法见 [运行内存方法](../runtime-memory-method.md)，2026-10-19 的说明见 [正式对照](../runtime-memory-2026-10-19.md)。已有公开界面图位于 [preview/desktop](../../preview/desktop/)。不同日期即使都写作 0.2.8，也可能是不同构建；必须结合报告中的产物哈希判断，不能把早期安装版验收套用到当前安装包。
+测量方法见 [运行内存方法](../runtime-memory-method.md)，2026-10-19 的说明见 [正式对照](../runtime-memory-2026-10-19.md)。已有公开界面图位于 [preview/desktop](../../preview/desktop/)。不同日期即使都写作 0.3.0，也可能是不同构建；必须结合报告中的产物哈希判断，不能把早期安装版验收套用到当前安装包。
 
 ## 下载文件校验
 
-[SHA256SUMS-0.2.8.txt](SHA256SUMS-0.2.8.txt)记录 2026-10-23 当前本地安装包和免安装版的 SHA-256。[清单](manifest.json)同时记录文件名、字节数与校验值。这是文件一致性检查，不是代码签名，也不证明其他来源的同名文件可信。
+[SHA256SUMS-0.3.0.txt](SHA256SUMS-0.3.0.txt)记录 2026-10-29 当前本地安装包和免安装版的 SHA-256。[清单](manifest.json)同时记录文件名、字节数与校验值。这是文件一致性检查，不是代码签名，也不证明其他来源的同名文件可信。
 
 在 PowerShell 中核对下载文件：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 -LiteralPath .\Model-Observatory-0.2.8-Setup.exe
-Get-FileHash -Algorithm SHA256 -LiteralPath .\Model-Observatory-0.2.8-Portable.exe
+Get-FileHash -Algorithm SHA256 -LiteralPath .\Model-Observatory-0.3.0-Setup.exe
+Get-FileHash -Algorithm SHA256 -LiteralPath .\Model-Observatory-0.3.0-Portable.exe
 ```
 
 只需检查你下载的那一个 EXE。将结果与校验文件中对应文件名的值逐字比较，大小写不影响比较。

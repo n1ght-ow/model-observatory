@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { ArrowUpRight, ChevronDown, CircleHelp, Database, Folder, MessageSquare } from "lucide-react";
+import { ArrowUpRight, ChevronDown, CircleDollarSign, CircleHelp, Database, Folder, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatCost } from "@/lib/observatory/pricing";
 import type {
 	AttributionModelSummary,
 	AttributionTotals,
@@ -11,7 +12,7 @@ import type {
 	UnknownAttributionSummary,
 } from "@/lib/observatory/types";
 
-export type AttributionSort = "requests" | "tokens";
+export type AttributionSort = "requests" | "tokens" | "cost";
 
 type AttributionViewProps = {
 	view: "projects" | "sessions";
@@ -55,6 +56,14 @@ function TokenReadout({ totals }: { totals: AttributionTotals }) {
 	</>;
 }
 
+function CostReadout({ totals }: { totals: AttributionTotals }) {
+	if (!totals.costRequests) return <><strong>未计价</strong><span className="obs-subtext">价目未收录或用量不完整</span></>;
+	return <>
+		<strong>{formatCost(totals.cost)}</strong>
+		<span className="obs-subtext">{number(totals.costRequests)}/{number(totals.requests)} 条已计价</span>
+	</>;
+}
+
 function ModelLedger({
 	models,
 	title,
@@ -71,11 +80,12 @@ function ModelLedger({
 	return <section className="obs-attribution-section">
 		<div className="obs-section-heading"><h2>{title}</h2><span>{number(models.length)} 个最终模型</span></div>
 		{models.length ? <div className="obs-table-scroll"><table className="obs-table obs-attribution-model-table">
-			<thead><tr><th>最终模型</th><th>请求数</th><th>已记录 Token</th><th><span className="sr-only">查看请求</span></th></tr></thead>
+			<thead><tr><th>最终模型</th><th>请求数</th><th>已记录 Token</th><th>花费</th><th><span className="sr-only">查看请求</span></th></tr></thead>
 			<tbody>{models.map((model) => <tr key={model.model}>
 				<td><strong className="obs-attribution-model">{model.model}</strong></td>
 				<td className="obs-numeric"><strong>{number(model.requests)}</strong>{model.turnRequests > 0 && <span className="obs-subtext">含 {number(model.turnRequests)} 轮会话请求</span>}</td>
 				<td className="obs-numeric"><TokenReadout totals={model} /></td>
+				<td className="obs-numeric"><CostReadout totals={model} /></td>
 				<td><Link className="obs-text-button" aria-label={`查看 ${model.model} 在当前归属中的请求`} href={`/requests?${rangeParams}${project ? `&project=${encodeURIComponent(project)}` : ""}${session ? `&session=${encodeURIComponent(session)}` : ""}&model=${encodeURIComponent(model.model)}`}>查看 <ArrowUpRight size={13} /></Link></td>
 			</tr>)}</tbody>
 		</table></div> : <p className="obs-attribution-empty-line">当前范围内没有模型请求。</p>}
@@ -124,6 +134,7 @@ function ProjectSummary({ totals }: { totals: AttributionTotals }) {
 		<div><span>当前范围请求</span><strong data-testid="attribution-detail-requests">{number(totals.requests)}<small>次</small></strong>{totals.turnRequests > 0 && <p>含 {number(totals.turnRequests)} 轮会话请求</p>}</div>
 		<div><span>已记录 Token</span><strong data-testid="attribution-detail-tokens">{totals.inputRequests || totals.outputRequests ? compact(recordedTokens(totals)) : "未记录"}</strong><p data-testid="attribution-detail-coverage">{number(totals.tokenRequests)}/{number(totals.requests)} 条完整用量</p></div>
 		<div><span>缓存读取</span><strong>{totals.cacheRequests ? compact(totals.cache) : "未记录"}</strong><p>{number(totals.cacheRequests)}/{number(totals.requests)} 条报告缓存</p></div>
+		<div><span>估算花费</span><strong data-testid="attribution-detail-cost">{totals.costRequests ? formatCost(totals.cost) : "未计价"}</strong><p data-testid="attribution-detail-cost-coverage">{number(totals.costRequests)}/{number(totals.requests)} 条已计价</p></div>
 	</>;
 }
 
@@ -158,7 +169,7 @@ function ProjectDetail({
 				<div className="obs-section-heading"><h2>关联会话</h2><span>{number(sessions.length)} 个已知会话</span></div>
 				{sessions.length ? <div className="obs-attribution-links">{sessions.map((session) => <Link key={session.key} href={`/sessions?${rangeParams}&project=${encodeURIComponent(project.key)}&session=${encodeURIComponent(session.key)}`}>
 					<span><MessageSquare size={14} /><code>{session.label}</code></span>
-					<span>{session.source} · {number(session.totals.requests)} 次请求</span>
+					<span>{session.source} · {number(session.totals.requests)} 次请求 · {session.totals.costRequests ? formatCost(session.totals.cost) : "未计价"}</span>
 					<ArrowUpRight size={14} />
 				</Link>)}</div> : <p className="obs-attribution-empty-line">当前范围内没有同时具备项目与会话归属的请求。只缺会话归属的请求仍计入上方项目统计。</p>}
 			</section>
@@ -223,7 +234,7 @@ function UnknownLedger({
 		<div className="obs-section-heading obs-attribution-unknown-heading"><h2 id={`unknown-${filter}-title`}>未知{subject}</h2><span>{number(coverage.unknownRequests)} 条请求缺少可用{subject}归属</span><Link className="obs-text-button" href={`/requests?${rangeParams}&unknown=${filter}`}>查看全部未知{subject}请求 <ArrowUpRight size={14} /></Link></div>
 		{items.length ? <div className="obs-attribution-unknown-list">{items.map((item) => <article key={item.key}>
 			<div className="obs-attribution-unknown-icon"><CircleHelp size={16} /></div>
-			<div><h3>{item.label}</h3><p>{number(item.totals.requests)} 次请求 · {item.totals.tokenRequests}/{item.totals.requests} 条完整用量</p></div>
+			<div><h3>{item.label}</h3><p>{number(item.totals.requests)} 次请求 · {item.totals.tokenRequests}/{item.totals.requests} 条完整用量 · {item.totals.costRequests ? `${formatCost(item.totals.cost)} 估算花费` : "未计价"}</p></div>
 		</article>)}</div> : <div className="obs-attribution-empty-line">当前范围内没有缺少{subject}归属的请求。</div>}
 	</section>;
 }
@@ -292,7 +303,7 @@ export function AttributionView({ view, snapshot, rangeParams, sort, selectedKey
 			: <DetailStatus view={view} tone="empty" title="当前范围无匹配请求" text="该归属对象不存在，或它在当前时间范围内没有请求。" onRetry={onRetry} onClear={onClearSelection} />;
 	}
 
-	const sortValue = (totals: AttributionTotals) => sort === "tokens" ? recordedTokens(totals) : totals.requests;
+	const sortValue = (totals: AttributionTotals) => sort === "tokens" ? recordedTokens(totals) : sort === "cost" ? totals.cost : totals.requests;
 	const projects = [...attribution.projects].sort((a, b) => sortValue(b.totals) - sortValue(a.totals) || b.totals.requests - a.totals.requests || a.label.localeCompare(b.label));
 	const sessions = [...attribution.sessions].sort((a, b) => sortValue(b.totals) - sortValue(a.totals) || b.totals.requests - a.totals.requests || (b.latest ?? "").localeCompare(a.latest ?? ""));
 	return <>
@@ -300,30 +311,33 @@ export function AttributionView({ view, snapshot, rangeParams, sort, selectedKey
 			<div><span><Folder size={14} />{view === "projects" ? "已识别项目" : "已识别会话"}</span><strong data-testid="attribution-known-count">{number(view === "projects" ? projects.length : sessions.length)}</strong><p>{number(unknown.length)} 类未知归属入口</p></div>
 			<div><span><Database size={14} />有{view === "projects" ? "项目" : "会话"}归属</span><strong data-testid="attribution-known-requests">{number(knownRequests)}<small>/ {number(allRequests)} 次</small></strong><p>{allRequests ? `${Math.round(knownRequests / allRequests * 100)}% 的范围内请求可归属` : "当前范围没有请求"}</p></div>
 			<div><span><Database size={14} />完整用量覆盖</span><strong>{number(completeUsage)}<small>/ {number(allRequests)} 条</small></strong><p>只有同时报告输入与输出的请求计入完整用量</p></div>
+			<div><span><CircleDollarSign size={14} />估算花费</span><strong data-testid="attribution-cost-total">{snapshot.totals.costRequests ? formatCost(snapshot.totals.cost) : "未计价"}</strong><p>{number(snapshot.totals.costRequests)}/{number(snapshot.totals.requests)} 条请求已计价</p></div>
 		</section>
 
 		{view === "projects" ? <>
-			<div className="obs-ledger-heading obs-attribution-heading"><div><h2>项目账本</h2><span>{number(projects.length)} 个项目</span></div><span className="obs-attribution-sort-note">按{sort === "tokens" ? "已记录 Token" : "请求数"}从高到低</span></div>
+			<div className="obs-ledger-heading obs-attribution-heading"><div><h2>项目账本</h2><span>{number(projects.length)} 个项目</span></div><span className="obs-attribution-sort-note">按{sort === "tokens" ? "已记录 Token" : sort === "cost" ? "估算花费" : "请求数"}从高到低</span></div>
 			<div className="obs-table-scroll"><table className="obs-table obs-attribution-table" data-testid="project-ledger">
-				<thead><tr><th>项目</th><th aria-sort={sort === "requests" ? "descending" : undefined}><SortHeader active={sort === "requests"} onClick={() => onSort("requests")}>请求数</SortHeader></th><th aria-sort={sort === "tokens" ? "descending" : undefined}><SortHeader active={sort === "tokens"} onClick={() => onSort("tokens")}>已记录 Token</SortHeader></th><th>涉及模型</th><th>最近活动</th><th><span className="sr-only">打开项目</span></th></tr></thead>
+				<thead><tr><th>项目</th><th aria-sort={sort === "requests" ? "descending" : undefined}><SortHeader active={sort === "requests"} onClick={() => onSort("requests")}>请求数</SortHeader></th><th aria-sort={sort === "tokens" ? "descending" : undefined}><SortHeader active={sort === "tokens"} onClick={() => onSort("tokens")}>已记录 Token</SortHeader></th><th aria-sort={sort === "cost" ? "descending" : undefined}><SortHeader active={sort === "cost"} onClick={() => onSort("cost")}>花费</SortHeader></th><th>涉及模型</th><th>最近活动</th><th><span className="sr-only">打开项目</span></th></tr></thead>
 				<tbody>{projects.map((project) => <tr key={project.key}>
 					<td><button className="obs-attribution-name" aria-label={`打开项目 ${project.label}`} onClick={() => onSelect(project.key)}><strong>{project.label}</strong>{project.path && <code>{project.path}</code>}<span>{project.source}</span></button></td>
 					<td className="obs-numeric"><strong>{number(project.totals.requests)}</strong><div className="obs-usage-track"><i style={{ width: `${project.totals.requests / Math.max(1, allRequests) * 100}%` }} /></div></td>
 					<td className="obs-numeric"><TokenReadout totals={project.totals} /></td>
+					<td className="obs-numeric"><CostReadout totals={project.totals} /></td>
 					<td className="obs-numeric"><strong>{number(project.modelCount)}</strong><span className="obs-subtext">个最终模型</span></td>
 					<td className="obs-time">{clock(project.latest)}</td>
 					<td><button className="obs-icon-button" aria-label={`查看项目 ${project.label} 的模型与会话`} onClick={() => onSelect(project.key)}><ChevronDown size={15} /></button></td>
 				</tr>)}</tbody>
 			</table>{!projects.length && <div className="obs-empty"><Folder size={26} strokeWidth={1.2} /><h3>当前范围没有已识别项目</h3><p>可以从下方未知项目入口核对缺少归属的请求。</p></div>}</div>
 		</> : <>
-			<div className="obs-ledger-heading obs-attribution-heading"><div><h2>会话账本</h2><span>{number(sessions.length)} 个会话</span></div><span className="obs-attribution-sort-note">按{sort === "tokens" ? "已记录 Token" : "请求数"}从高到低</span></div>
+			<div className="obs-ledger-heading obs-attribution-heading"><div><h2>会话账本</h2><span>{number(sessions.length)} 个会话</span></div><span className="obs-attribution-sort-note">按{sort === "tokens" ? "已记录 Token" : sort === "cost" ? "估算花费" : "请求数"}从高到低</span></div>
 			<div className="obs-table-scroll"><table className="obs-table obs-attribution-table" data-testid="session-ledger">
-				<thead><tr><th>会话</th><th>项目归属</th><th aria-sort={sort === "requests" ? "descending" : undefined}><SortHeader active={sort === "requests"} onClick={() => onSort("requests")}>请求数</SortHeader></th><th aria-sort={sort === "tokens" ? "descending" : undefined}><SortHeader active={sort === "tokens"} onClick={() => onSort("tokens")}>已记录 Token</SortHeader></th><th>涉及模型</th><th>范围内最近</th><th><span className="sr-only">打开会话</span></th></tr></thead>
+				<thead><tr><th>会话</th><th>项目归属</th><th aria-sort={sort === "requests" ? "descending" : undefined}><SortHeader active={sort === "requests"} onClick={() => onSort("requests")}>请求数</SortHeader></th><th aria-sort={sort === "tokens" ? "descending" : undefined}><SortHeader active={sort === "tokens"} onClick={() => onSort("tokens")}>已记录 Token</SortHeader></th><th aria-sort={sort === "cost" ? "descending" : undefined}><SortHeader active={sort === "cost"} onClick={() => onSort("cost")}>花费</SortHeader></th><th>涉及模型</th><th>范围内最近</th><th><span className="sr-only">打开会话</span></th></tr></thead>
 				<tbody>{sessions.map((session) => <tr key={session.key}>
 					<td><button className="obs-attribution-name" aria-label={`打开会话 ${session.label}`} onClick={() => onSelect(session.key)}><code>{session.id}</code><span>{session.source} · {session.client}</span></button></td>
 					<td><AttributionState value={session.project} />{session.project.status === "known" && (session.project.path || session.project.id || session.project.key) && <code className="obs-attribution-inline-id">{session.project.path ?? session.project.id ?? session.project.key}</code>}</td>
 					<td className="obs-numeric"><strong>{number(session.totals.requests)}</strong><div className="obs-usage-track"><i style={{ width: `${session.totals.requests / Math.max(1, allRequests) * 100}%` }} /></div></td>
 					<td className="obs-numeric"><TokenReadout totals={session.totals} /></td>
+					<td className="obs-numeric"><CostReadout totals={session.totals} /></td>
 					<td className="obs-numeric"><strong>{number(session.modelCount)}</strong><span className="obs-subtext">个最终模型</span></td>
 					<td className="obs-time">{clock(session.latest)}</td>
 					<td><button className="obs-icon-button" aria-label={`查看会话 ${session.label} 的模型与归属`} onClick={() => onSelect(session.key)}><ChevronDown size={15} /></button></td>

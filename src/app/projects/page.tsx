@@ -9,7 +9,7 @@ function Projects() {
 	const params = useSearchParams();
 	const project = params.get("project") ?? "";
 	const session = params.get("session") ?? "";
-	const sort = params.get("sort") === "tokens" ? "tokens" : "requests";
+	const sort = params.get("sort") === "tokens" ? "tokens" : params.get("sort") === "cost" ? "cost" : "requests";
 	return <Observatory key={`${project}:${session}:${sort}`} view="projects" initialProject={project} initialSession={session} initialSort={sort} initialRange={params.get("range") ?? ""} initialFrom={params.get("from") ?? ""} initialTo={params.get("to") ?? ""} />;
 }
 

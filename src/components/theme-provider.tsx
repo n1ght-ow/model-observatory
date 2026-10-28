@@ -5,6 +5,7 @@ import {
 	useCallback,
 	useContext,
 	useEffect,
+	useLayoutEffect,
 	useSyncExternalStore,
 } from "react";
 
@@ -19,6 +20,9 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 const THEME_STORAGE_KEY = "router-monitor-theme";
 const themeListeners = new Set<() => void>();
+// Layout effects do not run during static export. Apply the stored theme on the
+// client before paint, after hydration has matched the server's dark shell.
+const useThemeEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 function applyTheme(theme: Theme) {
 	const root = document.documentElement;
@@ -67,7 +71,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 		getServerThemeSnapshot,
 	);
 
-	useEffect(() => {
+	useThemeEffect(() => {
 		applyTheme(theme);
 	}, [theme]);
 
@@ -92,6 +96,3 @@ export function useTheme() {
 	}
 	return context;
 }
-
-/** Injected before hydration so the stored theme applies without a flash. */
-export const THEME_INIT_SCRIPT = `(function(){var t='dark';try{if(localStorage.getItem('${THEME_STORAGE_KEY}')==='light')t='light';}catch(e){}document.documentElement.classList.toggle('dark',t==='dark');document.documentElement.style.colorScheme=t;})();`;

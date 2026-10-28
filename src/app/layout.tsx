@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/theme-provider";
+import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 import "./observatory.css";
 
@@ -26,9 +26,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`dark ${geistSans.variable} ${geistMono.variable}`}
       suppressHydrationWarning
     >
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
-      </head>
       <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>

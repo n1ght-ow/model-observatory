@@ -15,11 +15,36 @@ const { reconcile, makeSnapshot, eventTimes, nextSnapshotChange } = require("../
 const { timeBounds, validCustomDates } = require("../src/lib/observatory/time-range.ts");
 const { scanJsonl, releaseCommittedJsonl } = require("../src/lib/observatory/jsonl.ts");
 const { discardCodexPrefix } = require("../src/lib/observatory/readers.ts");
+const { eventCost, formatCost, pricingFor, PRICING_AS_OF } = require("../src/lib/observatory/pricing.ts");
 const { readDshSessionFile, releaseCommittedDsh } = require("../src/lib/observatory/sources/dsh.ts");
 const { ObservationArchive } = require("../src/lib/observatory/archive.ts");
 const now = Date.parse("2026-10-14T06:00:00Z");
 const row = (id, changes = {}) => ({ id, at: "2026-10-14T05:00:00Z", model: "gpt-6.1-sol", rawModel: "gpt-6.1-sol", client: "Codex", upstream: "未记录", input: 1000, output: 100, cache: 500, status: "unknown", duration: null, identity: "reported", evidence: [{ id, source: "codex", kind: "session" }], ...changes });
 const route = (id, changes = {}) => row(id, { rawModel: "openai/gpt-6.1-sol", client: "未识别工具", upstream: "openai", evidence: [{ id, source: "router", kind: "router" }], ...changes });
+
+test("cost uses cache-subtracted input, long-context rates, documented aliases and DeepSeek peak windows", () => {
+	assert.equal(PRICING_AS_OF, "2026-10-29");
+	assert.equal(pricingFor("gpt-6.1-sol").input, 2);
+	assert.equal(eventCost(row("plain")), 0.00205, "(1000-500)*$2 + 500*$0.10 + 100*$10 per million");
+	assert.equal(eventCost(row("long", { model: "gpt-6.1-sol", rawModel: "gpt-6.1-sol", input: 300_000, output: 1_000, cache: 0 })), 1.215, "long context prices every token at the higher tier");
+	assert.equal(eventCost(row("alias", { model: "deepseek-v4-flash", rawModel: "deepseek-v4-flash", client: "pi" })), 0.0001365, "documented legacy name uses the Flash price");
+	assert.equal(eventCost(row("unknown", { model: "no-such-model", rawModel: "no-such-model" })), null);
+	assert.equal(eventCost(row("missing-cache", { cache: null })), null, "an unknown cache count cannot be priced as zero");
+	assert.equal(eventCost(row("untimed", { timeKnown: false, at: "1970-01-01T00:00:00.000Z", model: "deepseek-flash", rawModel: "deepseek-flash" })), null, "peak pricing needs a usable request time");
+
+	const peak = row("peak", { model: "deepseek-flash", rawModel: "deepseek-flash", at: "2026-10-14T02:00:00Z" });
+	const offPeak = row("off-peak", { model: "deepseek-flash", rawModel: "deepseek-flash", at: "2026-10-14T05:00:00Z" });
+	const weekend = row("weekend", { model: "deepseek-flash", rawModel: "deepseek-flash", at: "2026-10-17T02:00:00Z" });
+	const expected = (input, cache, output) => ((input - cache) * 0.3 + cache * 0.006 + output * 1.2) / 1e6;
+	assert.equal(eventCost(peak), expected(1000, 500, 100));
+	assert.equal(eventCost(offPeak), 0.0001365);
+	assert.equal(eventCost(weekend), 0.0001365);
+
+	assert.equal(formatCost(0), "$0.00");
+	assert.equal(formatCost(0.00205), "$0.002050");
+	assert.equal(formatCost(12.345), "$12.35");
+	assert.equal(formatCost(null), "—");
+});
 
 test("Codex discards only recognized non-usage envelopes and resumes after split, long and rotated lines", async () => {
 	for (const prefix of ['{"type":"response_item","payload":', '{"timestamp":"2026-10-18","type":"response_item",', '{"type":"event_msg","payload":{"type":"agent_message",']) assert.equal(discardCodexPrefix(prefix), true);
@@ -86,7 +111,7 @@ test("activity model details conserve reconciled usage, preserve unknowns and re
 	assert.equal(point.requests, 4);
 	assert.equal(point.tokens, 1120, "cache and mirrored evidence must not add to input + output");
 	assert.equal(point.models.length, 3, "concrete model versions remain separate");
-	assert.deepEqual(point.models.find((m) => m.model === "gpt-6.1-sol"), { model: "gpt-6.1-sol", requests: 2, input: 1000, output: 120, cache: 500, inputRequests: 1, outputRequests: 2, cacheRequests: 1, tokenRequests: 1 });
+	assert.deepEqual(point.models.find((m) => m.model === "gpt-6.1-sol"), { model: "gpt-6.1-sol", requests: 2, input: 1000, output: 120, cache: 500, inputRequests: 1, outputRequests: 2, cacheRequests: 1, tokenRequests: 1, cost: 0.00205, costRequests: 1 });
 	assert.equal(point.models.find((m) => m.model === "other-v2").tokenRequests, 0);
 	assert.equal(point.models.find((m) => m.model === "other-v1").tokenRequests, 1, "reported zero is known usage");
 	for (const p of snapshot.activity) {

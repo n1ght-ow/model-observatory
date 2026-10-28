@@ -1,9 +1,67 @@
 {
   "format": 1,
-  "publicationDate": "2026-10-23",
-  "repositoryHeadAtExport": "cb35dd47f466b362c1751306682e7c96553a4912",
-  "note": "Historical evidence exported without rerunning the recorded tests. Source hashes identify local originals; published hashes identify sanitized copies. Matching version numbers do not establish matching builds. Raw fixtures, samples and screenshots are not included.",
+  "publicationDate": "2026-10-29",
+  "repositoryHeadAtExport": "1b87402e23405448c2a8e796887d62970b1a21ab",
+  "note": "The 0.3.0 reports were exported from tests run on 2026-10-29; earlier reports were exported without rerunning. Source hashes identify local originals; published hashes identify sanitized copies. Matching version numbers do not establish matching builds. Raw fixtures, samples, screenshots and user data are not included.",
   "reports": [
+    {
+      "source": "logs/desktop-acceptance/report.json",
+      "sourceBytes": 1507,
+      "sourceSha256": "30a5462391901e53984e1f450728dc2240e89dc1fd9eb601e6ca682c562e3763",
+      "published": "desktop-2026-10-29.json",
+      "publishedBytes": 1311,
+      "publishedSha256": "7b98742a9c0ae4d73d3b503c9fb6776e93ddd0ecb1566351f17c13d64323392f",
+      "removedFields": [
+        "packagedExecutable",
+        "relocatedPath"
+      ],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/desktop-ui-acceptance/e2e.json",
+      "sourceBytes": 1303,
+      "sourceSha256": "06668c7e902eba7896c4ca3fa00305d6bda158bddf92b5cbef917b29ca466f0e",
+      "published": "ui-2026-10-29.json",
+      "publishedBytes": 1326,
+      "publishedSha256": "43e8d22bbca970bbec64c55a60f8d3add2435c63a152a202a3fb7629da8d034d",
+      "removedFields": [],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/desktop-acceptance/report.json",
+      "sourceBytes": 1507,
+      "sourceSha256": "0c6f44de61f21ef382338bbd2f19a35cb0d42aa0013a4ddc95fd6e99f4b69032",
+      "published": "desktop-2026-10-29.json",
+      "publishedBytes": 1311,
+      "publishedSha256": "5727c31bb9d955a190462ef17ee2351f029894c1b7f0cc12f2e4d7c7488661ad",
+      "removedFields": [
+        "packagedExecutable",
+        "relocatedPath"
+      ],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
+    {
+      "source": "logs/desktop-ui-acceptance/e2e.json",
+      "sourceBytes": 1303,
+      "sourceSha256": "81baa707670d4aa99dfe20f929a8eaa3034aac9e4dcb1d9d62280a5f15c82150",
+      "published": "ui-2026-10-29.json",
+      "publishedBytes": 1326,
+      "publishedSha256": "ad2f70166ecacf31441aadf1cc7e0ab1d071c1a365aac548d2c8abc665d283d6",
+      "removedFields": [],
+      "sanitization": [
+        "Replace local home and workspace roots with placeholders",
+        "Remove ANSI color codes"
+      ]
+    },
     {
       "source": "logs/desktop-acceptance/report.json",
       "sourceBytes": 1507,
@@ -109,14 +167,14 @@
   ],
   "installers": [
     {
-      "name": "Model-Observatory-0.2.8-Setup.exe",
-      "bytes": 112410348,
-      "sha256": "330066d208caa950ac23cd783cd517b5fa60b60d12609259bef1d93ce813f913"
+      "name": "Model-Observatory-0.3.0-Setup.exe",
+      "bytes": 112286675,
+      "sha256": "72fd02f1d8d8ae58bed7a10b8b9ea9e10f5bec565c34e4bc0bdf167584ee584c"
     },
     {
-      "name": "Model-Observatory-0.2.8-Portable.exe",
-      "bytes": 112091970,
-      "sha256": "f663ff44240b8225d4d29b070ef0b45d5aa65bc25c322e59f281fe7bc13736f3"
+      "name": "Model-Observatory-0.3.0-Portable.exe",
+      "bytes": 111968311,
+      "sha256": "e682282cc88f2e43ba6d296f6d468e16a302fc5b0fabd060c9e255d40a636162"
     }
   ]
 }

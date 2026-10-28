@@ -1,4 +1,5 @@
 import type { AttributionCandidate, AttributionDimensionCoverage, AttributionFilter, AttributionLink, AttributionModelSummary, AttributionOverview, AttributionReason, AttributionSelection, AttributionStatus, AttributionTotals, AttributionValue, ModelEvent, ModelEventAttribution, ProjectAttributionSummary, SessionAttributionSummary, UnknownAttributionSummary } from "./types";
+import { eventCost } from "./pricing";
 
 type AttributionInput = {
 	source: string;
@@ -222,7 +223,7 @@ export function mergeEventAttribution(previous?: ModelEventAttribution, incoming
 }
 
 export function emptyAttributionTotals(): AttributionTotals {
-	return { requests: 0, turnRequests: 0, input: 0, output: 0, cache: 0, inputRequests: 0, outputRequests: 0, cacheRequests: 0, tokenRequests: 0, errors: 0 };
+	return { requests: 0, turnRequests: 0, input: 0, output: 0, cache: 0, inputRequests: 0, outputRequests: 0, cacheRequests: 0, tokenRequests: 0, errors: 0, cost: 0, costRequests: 0 };
 }
 
 function addTotals(target: AttributionTotals, row: ModelEvent) {
@@ -236,6 +237,8 @@ function addTotals(target: AttributionTotals, row: ModelEvent) {
 	target.cacheRequests += Number(row.cache !== null);
 	target.tokenRequests += Number(row.input !== null && row.output !== null);
 	target.errors += Number(row.status === "error");
+	const cost = eventCost(row);
+	if (cost !== null) { target.cost += cost; target.costRequests++; }
 }
 
 function copyTotals(value: AttributionTotals): AttributionTotals {

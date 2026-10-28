@@ -79,7 +79,7 @@ test("lean desktop server preserves API, CSV and aliases while limiting bodies a
 				const snapshot=await (await fetch(base+'/api/observatory?range=all&page=1')).json();assert.equal(snapshot.totals.requests,257);assert.equal(snapshot.requests.length,50);assert.equal(snapshot.requests[0].id,'row-50');
 				const recent=await (await fetch(base+'/api/observatory?range=all&limit=5')).json();assert.equal(recent.requests.length,5);assert.equal(recent.requestCount,257);assert.equal(recent.requests[0].id,'row-0');
 				const summary=await (await fetch(base+'/api/observatory?range=all&limit=0')).json();assert.equal(summary.requests.length,0);assert.equal(summary.totals.requests,257);
-				const csv=await fetch(base+'/api/observatory?range=all&format=csv');assert.match(csv.headers.get('content-type'),/text\\/csv/);const text=await csv.text();assert.equal(text.trim().split('\\r\\n').length,258);assert.match(text,/会话请求轮次/);
+				const csv=await fetch(base+'/api/observatory?range=all&format=csv');assert.match(csv.headers.get('content-type'),/text\\/csv/);const text=await csv.text();assert.equal(text.trim().split('\\r\\n').length,258);assert.match(text,/会话请求轮次/);assert.match(text,/估算花费USD/);assert.match(text,/计价状态/);
 				const exportRequest=new Request(base+'/api/observatory?range=all&format=csv');
 				const direct=await require('./src/server/observatory.ts').GET(exportRequest);
 				let count=0;for await(const chunk of direct.body){const lines=chunk.toString().split('\\r\\n');count+=lines.length-1;}assert.equal(count,257);

@@ -2,6 +2,7 @@ import { normalizeModel, UNRECORDED_CLIENT } from "./identity";
 import type { ActivityModel, ActivityPoint, ModelEvent, ModelSummary, ObservatorySnapshot, Coverage } from "./types";
 import { timeBounds, type CustomDates } from "./time-range";
 import { buildAttribution, mergeEventAttribution } from "./attribution";
+import { eventCost, PRICING_AS_OF, PRICING_NOTE, PRICING_SOURCES } from "./pricing";
 
 /** One-to-one reconciliation: never dedupe two calls made by the same reader. */
 export function reconcile(observations: ModelEvent[], aliases: Record<string, string> = {}) {
@@ -133,10 +134,10 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 	const upstreams = new Map<string, Set<string>>();
 	const aliasSets = new Map<string, Set<string>>();
 	const clients = new Set<string>();
-	let turnRequests = 0, input = 0, output = 0, cache = 0, inputRequests = 0, outputRequests = 0, cacheRequests = 0, tokenRequests = 0, errors = 0;
+	let turnRequests = 0, input = 0, output = 0, cache = 0, inputRequests = 0, outputRequests = 0, cacheRequests = 0, tokenRequests = 0, errors = 0, cost = 0, costRequests = 0;
 	for (let index = 0; index < events.length; index++) {
 		const row = events[index];
-		const item = models.get(row.model) ?? { model: row.model, requests: 0, input: 0, output: 0, cache: 0, inputRequests: 0, outputRequests: 0, cacheRequests: 0, tokenRequests: 0, errors: 0, clients: [], upstreams: [], aliases: [], latest: row.timeKnown === false ? "" : row.at, configured: 0, turnRequests: 0 };
+		const item = models.get(row.model) ?? { model: row.model, requests: 0, input: 0, output: 0, cache: 0, inputRequests: 0, outputRequests: 0, cacheRequests: 0, tokenRequests: 0, errors: 0, clients: [], upstreams: [], aliases: [], latest: row.timeKnown === false ? "" : row.at, configured: 0, turnRequests: 0, cost: 0, costRequests: 0 };
 		item.requests++;
 		const turn = Number(row.scope === "turn");
 		item.turnRequests += turn; turnRequests += turn;
@@ -150,6 +151,8 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 		item.cacheRequests += hasCache; cacheRequests += hasCache;
 		const complete = Number(row.input !== null && row.output !== null);
 		item.tokenRequests += complete; tokenRequests += complete;
+		const rowCost = eventCost(row);
+		if (rowCost !== null) { item.cost += rowCost; item.costRequests++; cost += rowCost; costRequests++; }
 		const failed = Number(row.status === "error");
 		item.errors += failed; errors += failed;
 		item.configured += Number(row.identity === "configured");
@@ -179,7 +182,7 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 	const bucketAt = (at: number) => Math.floor((at + offset) / bucketMs) * bucketMs - offset;
 	const buckets = new Map<number, ActivityPoint>();
 	const bucketModels = new Map<ActivityPoint, Map<string, ActivityModel>>();
-	for (let at = bucketAt(start); at <= end; at += bucketMs) buckets.set(at, { at: new Date(Math.max(at, start)).toISOString(), until: new Date(Math.min(at + bucketMs, end + 1)).toISOString(), requests: 0, tokens: 0, models: [] });
+	for (let at = bucketAt(start); at <= end; at += bucketMs) buckets.set(at, { at: new Date(Math.max(at, start)).toISOString(), until: new Date(Math.min(at + bucketMs, end + 1)).toISOString(), requests: 0, tokens: 0, cost: 0, costRequests: 0, models: [] });
 	for (let index = 0; index < events.length; index++) {
 		if (events[index].timeKnown === false) continue;
 		const bucket = buckets.get(bucketAt(times[index]));
@@ -187,11 +190,13 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 			const row = events[index];
 			bucket.requests++; bucket.tokens += (row.input ?? 0) + (row.output ?? 0);
 			const byModel = bucketModels.get(bucket) ?? new Map<string, ActivityModel>();
-			const model = byModel.get(row.model) ?? { model: row.model, requests: 0, input: 0, output: 0, cache: 0, inputRequests: 0, outputRequests: 0, cacheRequests: 0, tokenRequests: 0 };
+			const model = byModel.get(row.model) ?? { model: row.model, requests: 0, input: 0, output: 0, cache: 0, inputRequests: 0, outputRequests: 0, cacheRequests: 0, tokenRequests: 0, cost: 0, costRequests: 0 };
 			model.requests++;
 			model.input += row.input ?? 0; model.output += row.output ?? 0; model.cache += row.cache ?? 0;
 			model.inputRequests += Number(row.input !== null); model.outputRequests += Number(row.output !== null); model.cacheRequests += Number(row.cache !== null);
 			model.tokenRequests += Number(row.input !== null && row.output !== null);
+			const rowCost = eventCost(row);
+			if (rowCost !== null) { bucket.cost += rowCost; bucket.costRequests++; model.cost += rowCost; model.costRequests++; }
 			if (!byModel.has(row.model)) { byModel.set(row.model, model); bucket.models.push(model); }
 			bucketModels.set(bucket, byModel);
 		}
@@ -200,9 +205,10 @@ export function makeSnapshot(observations: ModelEvent[], coverage: Coverage[], r
 	const attribution = buildAttribution(events).overview;
 	return {
 		generatedAt: new Date(now).toISOString(), range, since: since === null ? null : new Date(since).toISOString(), until: until === null ? null : new Date(until).toISOString(),
-		totals: { requests: events.length, turnRequests, models: models.size, clients: clients.size, input, output, cache, inputRequests, outputRequests, cacheRequests, errors, tokenRequests },
+		totals: { requests: events.length, turnRequests, models: models.size, clients: clients.size, input, output, cache, inputRequests, outputRequests, cacheRequests, errors, tokenRequests, cost, costRequests },
 		models: list, activity: [...buckets.values()], requests: events, requestCount: events.length, coverage,
 		reconciliation: { observations: observations.length, merged: ledger.merged, pending: ledger.pending.length, excluded: 0 },
 		pending: ledger.pending, aliases, attribution,
+		pricing: { asOf: PRICING_AS_OF, note: PRICING_NOTE, sources: PRICING_SOURCES },
 	};
 }

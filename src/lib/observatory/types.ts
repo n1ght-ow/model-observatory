@@ -59,6 +59,8 @@ export type ModelEvent = {
 	timeKnown?: boolean;
 	scope?: "turn";
 	attribution?: ModelEventAttribution;
+	/** Derived for exposed request rows only; never persisted as evidence. */
+	cost?: number | null;
 };
 
 export type Coverage = {
@@ -87,6 +89,8 @@ export type ModelSummary = {
 	latest: string;
 	configured: number;
 	turnRequests: number;
+	cost: number;
+	costRequests: number;
 };
 
 export type AttributionTotals = {
@@ -100,6 +104,8 @@ export type AttributionTotals = {
 	cacheRequests: number;
 	tokenRequests: number;
 	errors: number;
+	cost: number;
+	costRequests: number;
 };
 
 export type AttributionModelSummary = AttributionTotals & {
@@ -187,13 +193,15 @@ export type AttributionSelection = {
 	unknownSessions: UnknownAttributionSummary[];
 };
 
-export type ActivityModel = Pick<ModelSummary, "model" | "requests" | "input" | "output" | "cache" | "inputRequests" | "outputRequests" | "cacheRequests" | "tokenRequests">;
+export type ActivityModel = Pick<ModelSummary, "model" | "requests" | "input" | "output" | "cache" | "inputRequests" | "outputRequests" | "cacheRequests" | "tokenRequests" | "cost" | "costRequests">;
 
 export type ActivityPoint = {
 	at: string;
 	until: string;
 	requests: number;
 	tokens: number;
+	cost: number;
+	costRequests: number;
 	models: ActivityModel[];
 };
 
@@ -203,7 +211,7 @@ export type ObservatorySnapshot = {
 	range: string;
 	since: string | null;
 	until: string | null;
-	totals: { requests: number; turnRequests: number; input: number; output: number; cache: number; inputRequests: number; outputRequests: number; cacheRequests: number; models: number; clients: number; errors: number; tokenRequests: number };
+	totals: { requests: number; turnRequests: number; input: number; output: number; cache: number; inputRequests: number; outputRequests: number; cacheRequests: number; models: number; clients: number; errors: number; tokenRequests: number; cost: number; costRequests: number };
 	models: ModelSummary[];
 	activity: ActivityPoint[];
 	requests: ModelEvent[];
@@ -214,4 +222,5 @@ export type ObservatorySnapshot = {
 	aliases: Record<string, string>;
 	attribution: AttributionOverview;
 	selection?: AttributionSelection;
+	pricing: { asOf: string; note: string; sources: { id: string; label: string; url: string }[] };
 };
